@@ -34,14 +34,14 @@ function Install-WithWinget {
     return $false
   }
   Write-Host "Installing $Label via winget..." -ForegroundColor Cyan
-  $args = @(
+  $installArgs = @(
     "install", "--id", $Id, "-e", "--silent",
     "--accept-package-agreements", "--accept-source-agreements",
     "--disable-interactivity"
   )
-  & winget @args
+  & winget @installArgs
   Refresh-Path
-  return ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) # already installed
+  return ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189)
 }
 
 function Ensure-Git {
@@ -51,7 +51,6 @@ function Ensure-Git {
   if (-not (Install-WithWinget -Id "Git.Git" -Label "Git")) { return $false }
   Refresh-Path
   if (Get-Command git -ErrorAction SilentlyContinue) { return $true }
-  # Common install path before shell restart
   $gitExe = "C:\Program Files\Git\cmd\git.exe"
   if (Test-Path $gitExe) {
     $env:Path = "C:\Program Files\Git\cmd;" + $env:Path
@@ -235,7 +234,6 @@ function Update-IcarusManagerFromGit {
     }
 
     Write-Host "Updating Icarus Manager from $remoteRef..." -ForegroundColor Yellow
-    # Overwrite manager source. Do not use clean -x so gitignored data/ + config.json stay.
     if (-not (Invoke-GitQuiet @("checkout", "-B", "main", $remoteRef))) {
       if (-not (Invoke-GitQuiet @("reset", "--hard", $remoteRef))) {
         Write-Host "git update failed. Starting with the current files." -ForegroundColor Red

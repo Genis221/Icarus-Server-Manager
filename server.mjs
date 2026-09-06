@@ -35,6 +35,7 @@ const HOST = process.env.ICARUS_HOST || "0.0.0.0";
 const ALLOW_REMOTE = process.env.ICARUS_ALLOW_REMOTE !== "false";
 const ALLOW_PUBLIC = process.env.ICARUS_ALLOW_PUBLIC !== "false";
 const MAX_BODY = 4 * 1024 * 1024;
+const MAX_IMPORT_COPY_BYTES = 20 * 1024 * 1024 * 1024;
 const STEAM_APP_ID = "2089300";
 const STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
 const EXE_NAME = "IcarusServer-Win64-Shipping.exe";
@@ -62,6 +63,7 @@ const mime = {
 
 let state;
 const runtimes = new Map();
+const importJobs = new Map();
 let saveTimer = null;
 let automationRunning = false;
 
@@ -107,7 +109,33 @@ function makeServer(partial = {}) {
     firewallStatus: String(partial.firewallStatus || "Not Checked"),
     firewallAutoApproved: Boolean(partial.firewallAutoApproved),
     lastBackupAt: partial.lastBackupAt || null,
-    order: Number.isFinite(Number(partial.order)) ? Number(partial.order) : 0
+    order: Number.isFinite(Number(partial.order)) ? Number(partial.order) : 0,
+    icarus: makeIcarus({
+      ...(partial.icarus || {}),
+      gamePort: partial.icarus?.gamePort ?? parseGamePort(partial.launchArgs ?? partial.launch_args),
+      queryPort: partial.icarus?.queryPort ?? parseQueryPort(partial.launchArgs ?? partial.launch_args)
+    })
+  };
+}
+
+function makeIcarus(partial = {}) {
+  const mode = String(partial.prospectMode || "resume").toLowerCase();
+  return {
+    joinPassword: String(partial.joinPassword ?? ""),
+    adminPassword: String(partial.adminPassword ?? ""),
+    maxPlayers: clampInt(partial.maxPlayers ?? 8, 1, 20, 8),
+    stayOnline: partial.stayOnline !== undefined ? Boolean(partial.stayOnline) : true,
+    prospectMode: ["resume", "load", "create", "lobby"].includes(mode) ? mode : "resume",
+    loadProspect: String(partial.loadProspect ?? "").trim(),
+    createType: String(partial.createType ?? "OpenWorld_Styx").trim() || "OpenWorld_Styx",
+    createDifficulty: String(partial.createDifficulty ?? "2"),
+    createHardcore: Boolean(partial.createHardcore),
+    createSave: String(partial.createSave ?? "").trim(),
+    allowNonAdminsLaunch: partial.allowNonAdminsLaunch !== undefined ? Boolean(partial.allowNonAdminsLaunch) : true,
+    allowNonAdminsDelete: Boolean(partial.allowNonAdminsDelete),
+    gamePort: clampInt(partial.gamePort ?? 17777, 1024, 65535, 17777),
+    queryPort: clampInt(partial.queryPort ?? 27015, 1024, 65535, 27015),
+    lastProspectName: String(partial.lastProspectName ?? "").trim()
   };
 }
 
@@ -227,8 +255,11 @@ function parseGamePort(launchArgs) {
   return match ? Number(match[1]) : 17777;
 }
 
-function parseMaxPlayers(launchArgs) {
-  const text = String(launchArgs || "");
+function parseMaxPlayers(serverOrArgs) {
+  if (serverOrArgs && typeof serverOrArgs === "object") {
+    return clampInt(serverOrArgs.icarus?.maxPlayers, 1, 20, 8);
+  }
+  const text = String(serverOrArgs || "");
   let match = text.match(/-MaxPlayers=(\d+)/i);
   if (match) return Number(match[1]);
   match = text.match(/MaxPlayers=(\d+)/i);
@@ -286,7 +317,58 @@ function applySteamServerName(launchArgs, profile) {
   return `-SteamServerName="${name}" ${args}`;
 }
 
-const DEFAULT_SERVER_SETTINGS = `[/Script/Icarus.DedicatedServerSettings]
+function applyLaunchFlag(launchArgs, flag, value, { quoted = false } = {}) {
+  const args = String(launchArgs || "").trim();
+  const next = quoted ? `${flag}="${String(value).replace(/"/g, "")}"` : `${flag}=${value}`;
+  const pattern = new RegExp(`${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=(?:"[^"]*"|\\S+)`, "i");
+  if (pattern.test(args)) return args.replace(pattern, next);
+  return `${args} ${next}`.trim();
+}
+
+function applyIcarusLaunchArgs(server) {
+  const icarus = makeIcarus(server.icarus);
+  server.icarus = icarus;
+  let args = applySteamServerName(server.launchArgs, server.profile);
+  args = applyLaunchFlag(args, "-Port", icarus.gamePort);
+  args = applyLaunchFlag(args, "-QueryPort", icarus.queryPort);
+  if (!/(?:^|\s)-Log(?:\s|$)/i.test(args)) args = `${args} -Log`.trim();
+  server.launchArgs = args;
+  return args;
+}
+
+function iniBool(value) {
+  return value ? "True" : "False";
+}
+
+function readIniValue(raw, key) {
+  const match = String(raw || "").match(new RegExp(`^${key}\\s*=\\s*(.*)$`, "im"));
+  return match ? String(match[1]).trim() : "";
+}
+
+function upsertIniValue(raw, key, value) {
+  const line = `${key}=${value}`;
+  const pattern = new RegExp(`^${key}\\s*=.*$`, "im");
+  if (pattern.test(raw)) return raw.replace(pattern, line);
+  const header = "[/Script/Icarus.DedicatedServerSettings]";
+  if (raw.includes(header)) return raw.replace(header, `${header}\n${line}`);
+  return `${header}\n${line}\n${raw}`;
+}
+
+function createProspectLine(icarus) {
+  const type = String(icarus.createType || "").trim();
+  const save = String(icarus.createSave || "").trim();
+  if (!type || !save) return "";
+  const difficulty = clampInt(icarus.createDifficulty, 1, 4, 2);
+  const hardcore = icarus.createHardcore ? "true" : "false";
+  return `${type} ${difficulty} ${hardcore} ${save}`;
+}
+
+async function writeIcarusSettings(server) {
+  const icarus = makeIcarus(server.icarus);
+  server.icarus = icarus;
+  const iniPath = settingsIniPath(server);
+  await mkdir(path.dirname(iniPath), { recursive: true });
+  const DEFAULT_SERVER_SETTINGS = `[/Script/Icarus.DedicatedServerSettings]
 SessionName=
 JoinPassword=
 MaxPlayers=8
@@ -300,13 +382,46 @@ CreateProspect=
 ResumeProspect=True
 LastProspectName=
 `;
+  let raw = (await pathExists(iniPath)) ? await readFile(iniPath, "utf8") : DEFAULT_SERVER_SETTINGS;
+  const shutdown = icarus.stayOnline ? "-1" : "300.000000";
+  const load = icarus.prospectMode === "load" ? icarus.loadProspect : "";
+  const create = icarus.prospectMode === "create" ? createProspectLine(icarus) : "";
+  const resume = icarus.prospectMode === "resume";
+  const updates = {
+    SessionName: "",
+    JoinPassword: icarus.joinPassword,
+    MaxPlayers: String(icarus.maxPlayers),
+    AdminPassword: icarus.adminPassword,
+    ShutdownIfNotJoinedFor: shutdown,
+    ShutdownIfEmptyFor: shutdown,
+    AllowNonAdminsToLaunchProspects: iniBool(icarus.allowNonAdminsLaunch),
+    AllowNonAdminsToDeleteProspects: iniBool(icarus.allowNonAdminsDelete),
+    LoadProspect: load,
+    CreateProspect: create,
+    ResumeProspect: iniBool(resume)
+  };
+  for (const [key, value] of Object.entries(updates)) {
+    raw = upsertIniValue(raw, key, value);
+  }
+  await writeFile(iniPath, raw.replace(/\n{3,}/g, "\n\n"), "utf8");
+}
+
+async function hydrateIcarusFromIni(server) {
+  try {
+    const iniPath = settingsIniPath(server);
+    if (!server.install || !(await pathExists(iniPath))) return;
+    const raw = await readFile(iniPath, "utf8");
+    const last = readIniValue(raw, "LastProspectName");
+    if (last) server.icarus.lastProspectName = last;
+    if (!server.icarus.joinPassword) server.icarus.joinPassword = readIniValue(raw, "JoinPassword");
+    if (!server.icarus.adminPassword) server.icarus.adminPassword = readIniValue(raw, "AdminPassword");
+  } catch {
+    // ignore missing/unreadable ini
+  }
+}
 
 async function ensureServerSettings(server) {
-  const iniPath = settingsIniPath(server);
-  await mkdir(path.dirname(iniPath), { recursive: true });
-  if (!(await pathExists(iniPath))) {
-    await writeFile(iniPath, DEFAULT_SERVER_SETTINGS, "utf8");
-  }
+  await writeIcarusSettings(server);
 }
 
 function isLoopbackRequest(req) {
@@ -370,7 +485,7 @@ function publicServer(server, rcon = null) {
     autostartDays, autostartTime, autostartUpdate,
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
-    logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order
+    logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order, icarus
   } = server;
   return {
     id, profile, install, steamcmd, version, launchArgs,
@@ -378,10 +493,11 @@ function publicServer(server, rcon = null) {
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
     logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order,
+    icarus: makeIcarus(icarus),
     status: runtime.updating ? "Updating" : runtime.status,
     availability: runtime.availability,
     players: runtime.players,
-    maxPlayers: runtime.maxPlayers || parseMaxPlayers(server.launchArgs),
+    maxPlayers: runtime.maxPlayers || parseMaxPlayers(server),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
     updating: Boolean(runtime.updating),
@@ -409,7 +525,10 @@ async function getRconPublic(server) {
 
 async function publicStateAsync() {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
-  const servers = await Promise.all(ordered.map(async server => publicServer(server, await getRconPublic(server))));
+  const servers = await Promise.all(ordered.map(async server => {
+    await hydrateIcarusFromIni(server);
+    return publicServer(server, await getRconPublic(server));
+  }));
   return {
     host: {
       managerPort: PORT,
@@ -447,6 +566,321 @@ async function pathExists(target) {
   } catch {
     return false;
   }
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = "B";
+  for (const next of units) {
+    value /= 1024;
+    unit = next;
+    if (value < 1024) break;
+  }
+  return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+}
+
+function isPathInside(parent, child) {
+  const a = path.resolve(parent).toLowerCase();
+  const b = path.resolve(child).toLowerCase();
+  if (b === a) return true;
+  const prefix = a.endsWith(path.sep) ? a : a + path.sep;
+  return b.startsWith(prefix.toLowerCase());
+}
+
+function parseIniBool(value, fallback = false) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "true" || text === "1") return true;
+  if (text === "false" || text === "0") return false;
+  return fallback;
+}
+
+function parseCreateProspect(line) {
+  const parts = String(line || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) {
+    return { createType: "OpenWorld_Styx", createDifficulty: "2", createHardcore: false, createSave: "" };
+  }
+  return {
+    createType: parts[0] || "OpenWorld_Styx",
+    createDifficulty: String(clampInt(parts[1], 1, 4, 2)),
+    createHardcore: parseIniBool(parts[2], false),
+    createSave: parts.slice(3).join(" ")
+  };
+}
+
+function icarusFromIniText(raw, launchArgs = "") {
+  const load = readIniValue(raw, "LoadProspect");
+  const create = readIniValue(raw, "CreateProspect");
+  const resume = parseIniBool(readIniValue(raw, "ResumeProspect"), true);
+  let prospectMode = "resume";
+  if (load) prospectMode = "load";
+  else if (resume) prospectMode = "resume";
+  else if (create) prospectMode = "create";
+  else prospectMode = "lobby";
+  const created = parseCreateProspect(create);
+  const shutdown = String(readIniValue(raw, "ShutdownIfNotJoinedFor") || "").trim();
+  const stayOnline = shutdown === "-1" || shutdown === "";
+  return makeIcarus({
+    joinPassword: readIniValue(raw, "JoinPassword"),
+    adminPassword: readIniValue(raw, "AdminPassword"),
+    maxPlayers: clampInt(readIniValue(raw, "MaxPlayers") || 8, 1, 20, 8),
+    stayOnline,
+    prospectMode,
+    loadProspect: load,
+    ...created,
+    allowNonAdminsLaunch: parseIniBool(readIniValue(raw, "AllowNonAdminsToLaunchProspects"), true),
+    allowNonAdminsDelete: parseIniBool(readIniValue(raw, "AllowNonAdminsToDeleteProspects"), false),
+    lastProspectName: readIniValue(raw, "LastProspectName"),
+    gamePort: parseGamePort(launchArgs),
+    queryPort: parseQueryPort(launchArgs)
+  });
+}
+
+async function findSettingsIniForInstall(install) {
+  const candidates = [
+    path.join(install, "Icarus", "Saved", "Config", "WindowsServer", "ServerSettings.ini"),
+    path.join(install, "Icarus", "Saved", "Config", "ServerSettings.ini"),
+    path.join(install, "Saved", "Config", "WindowsServer", "ServerSettings.ini")
+  ];
+  for (const file of candidates) {
+    if (await pathExists(file)) return file;
+  }
+  return candidates[0];
+}
+
+async function resolveIcarusInstallRoot(input) {
+  let dir = path.resolve(String(input || "").trim());
+  if (!dir) throw Object.assign(new Error("Choose a server folder"), { status: 400 });
+  if (!(await pathExists(dir))) throw Object.assign(new Error("That folder does not exist"), { status: 404 });
+  const st = await stat(dir);
+  if (st.isFile()) dir = path.dirname(dir);
+  let current = dir;
+  for (let i = 0; i < 8; i++) {
+    const fake = { install: current };
+    for (const candidate of exeCandidates(fake)) {
+      if (await pathExists(candidate)) return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw Object.assign(new Error("That folder does not look like an Icarus dedicated server (missing IcarusServer-Win64-Shipping.exe)"), { status: 400 });
+}
+
+async function readLaunchHints(install) {
+  let args = "";
+  let names = [];
+  try {
+    const entries = await readdir(install);
+    for (const name of entries) {
+      if (!/\.(bat|cmd|ps1|txt)$/i.test(name)) continue;
+      const full = path.join(install, name);
+      try {
+        const st = await stat(full);
+        if (!st.isFile() || st.size > 256 * 1024) continue;
+        const text = await readFile(full, "utf8");
+        if (/-SteamServerName=/i.test(text) || /-Port=/i.test(text) || /IcarusServer/i.test(text)) {
+          args += ` ${text}`;
+        }
+        const named = text.match(/-SteamServerName=(?:"([^"]+)"|(\S+))/i);
+        if (named) names.push(named[1] || named[2]);
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* ignore */ }
+  return { launchText: args, scriptName: names.find(Boolean) || "" };
+}
+
+async function findSteamCmdNear(install) {
+  const dirs = [
+    path.join(install, "SteamCMD"),
+    path.join(install, "steamcmd"),
+    path.join(path.dirname(install), "SteamCMD"),
+    path.join(path.dirname(install), "steamcmd"),
+    install,
+    path.dirname(install)
+  ];
+  for (const dir of dirs) {
+    if (await pathExists(path.join(dir, "steamcmd.exe"))) return dir;
+  }
+  return "";
+}
+
+async function measureFolder(root) {
+  let bytes = 0;
+  let files = 0;
+  async function walk(current) {
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isFile()) {
+        try {
+          bytes += (await stat(full)).size;
+          files += 1;
+        } catch { /* skip */ }
+      }
+    }
+  }
+  await walk(root);
+  return { bytes, files };
+}
+
+async function inspectIcarusInstall(sourcePath, { measure = true } = {}) {
+  const install = await resolveIcarusInstallRoot(sourcePath);
+  const iniPath = await findSettingsIniForInstall(install);
+  const raw = (await pathExists(iniPath)) ? await readFile(iniPath, "utf8") : "";
+  const hints = await readLaunchHints(install);
+  const icarus = icarusFromIniText(raw, hints.launchText || defaultLaunchArgs(path.basename(install)));
+  const profile = String(
+    hints.scriptName || icarus.lastProspectName || path.basename(install) || "Imported Server"
+  ).replace(/"/g, "").trim() || "Imported Server";
+  let launchArgs = defaultLaunchArgs(profile);
+  launchArgs = applyLaunchFlag(launchArgs, "-Port", icarus.gamePort);
+  launchArgs = applyLaunchFlag(launchArgs, "-QueryPort", icarus.queryPort);
+  const size = measure ? await measureFolder(install) : { bytes: 0, files: 0 };
+  const steamcmd = await findSteamCmdNear(install);
+  let version = "";
+  try {
+    const found = await getArkVersionFromLogs(install);
+    if (found && found !== "Unknown") version = found;
+  } catch { /* ignore */ }
+  return {
+    source: install,
+    profile,
+    install,
+    steamcmd,
+    version,
+    launchArgs,
+    icarus,
+    iniPath: (await pathExists(iniPath)) ? iniPath : "",
+    hasSettings: Boolean(raw),
+    bytes: size.bytes,
+    files: size.files,
+    sizeLabel: formatBytes(size.bytes),
+    copyAllowed: size.bytes <= MAX_IMPORT_COPY_BYTES
+  };
+}
+
+async function copyInstallTree(src, dest, job) {
+  await mkdir(dest, { recursive: true });
+  const entries = await readdir(src, { withFileTypes: true });
+  const dirs = entries.filter(entry => entry.isDirectory());
+  const files = entries.filter(entry => entry.isFile());
+  for (const entry of dirs) {
+    if (job.cancel) throw Object.assign(new Error("Import cancelled"), { status: 400 });
+    await copyInstallTree(path.join(src, entry.name), path.join(dest, entry.name), job);
+  }
+  let index = 0;
+  const workers = Math.min(8, Math.max(1, files.length));
+  async function worker() {
+    while (index < files.length) {
+      if (job.cancel) throw Object.assign(new Error("Import cancelled"), { status: 400 });
+      const entry = files[index++];
+      const from = path.join(src, entry.name);
+      const to = path.join(dest, entry.name);
+      await copyFile(from, to);
+      try {
+        job.copiedBytes += (await stat(from)).size;
+      } catch { /* size already counted in inspect */ }
+      job.copiedFiles += 1;
+    }
+  }
+  if (files.length) await Promise.all(Array.from({ length: workers }, () => worker()));
+}
+
+function publicImportJob(job) {
+  const percent = job.totalBytes
+    ? Math.min(99, Math.floor((job.copiedBytes / job.totalBytes) * 100))
+    : (job.status === "done" ? 100 : 0);
+  return {
+    id: job.id,
+    status: job.status,
+    error: job.error || "",
+    copy: job.copy,
+    source: job.source,
+    dest: job.dest,
+    copiedBytes: job.copiedBytes,
+    copiedFiles: job.copiedFiles,
+    totalBytes: job.totalBytes,
+    totalFiles: job.totalFiles,
+    percent: job.status === "done" ? 100 : percent,
+    sizeLabel: formatBytes(job.copiedBytes),
+    totalLabel: formatBytes(job.totalBytes),
+    server: job.server || null
+  };
+}
+
+async function runImportJob(job) {
+  job.status = job.copy ? "copying" : "importing";
+  try {
+    const install = job.copy ? job.dest : job.source;
+    if (job.copy) {
+      if (path.resolve(job.source).toLowerCase() === path.resolve(job.dest).toLowerCase()) {
+        throw Object.assign(new Error("Copy destination must be different from the source folder"), { status: 400 });
+      }
+      if (isPathInside(job.source, job.dest)) {
+        throw Object.assign(new Error("Copy destination cannot be inside the source folder"), { status: 400 });
+      }
+      if (await pathExists(job.dest)) {
+        const destStat = await stat(job.dest);
+        if (!destStat.isDirectory()) {
+          throw Object.assign(new Error("Copy destination must be a folder"), { status: 400 });
+        }
+        const existing = await readdir(job.dest);
+        if (existing.length) {
+          throw Object.assign(new Error("Copy destination must be empty or a new folder"), { status: 400 });
+        }
+      }
+      await copyInstallTree(job.source, job.dest, job);
+    }
+    const preview = await inspectIcarusInstall(install, { measure: false });
+    const server = makeServer({
+      profile: job.profile || preview.profile,
+      install,
+      steamcmd: preview.steamcmd,
+      version: preview.version,
+      launchArgs: preview.launchArgs,
+      icarus: preview.icarus,
+      order: state.servers.length
+    });
+    server.icarus = makeIcarus(preview.icarus);
+    server.launchArgs = applyIcarusLaunchArgs(server);
+    state.servers.push(server);
+    scheduleSave();
+    addActivity(`Imported ${server.profile} from ${install}`, "success");
+    job.server = publicServer(server);
+    job.status = "done";
+    job.copiedBytes = job.totalBytes || job.copiedBytes;
+  } catch (err) {
+    job.status = "error";
+    job.error = err.message || "Import failed";
+  }
+}
+
+async function browseFolderDialog(title) {
+  if (process.platform !== "win32") {
+    throw Object.assign(new Error("Folder picker is only available on Windows. Paste the path instead."), { status: 400 });
+  }
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    `$dialog.Description = ${powershellSingleQuote(title || "Select folder")}`,
+    "$dialog.ShowNewFolderButton = $true",
+    "try { $dialog.UseDescriptionForTitle = $true } catch {}",
+    "[void][System.Windows.Forms.Application]::EnableVisualStyles()",
+    "$result = $dialog.ShowDialog()",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.SelectedPath) }"
+  ].join("; ");
+  const result = await runCaptured("powershell.exe", ["-NoProfile", "-STA", "-Command", script], 300000);
+  const selected = String(result.output || "").trim();
+  return { path: selected, cancelled: !selected };
 }
 
 async function updateSessionName(iniPath, sessionName) {
@@ -897,7 +1331,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     return;
   }
   const match = await findProcessForInstall(server.install, procs);
-  runtime.maxPlayers = parseMaxPlayers(server.launchArgs);
+  runtime.maxPlayers = parseMaxPlayers(server);
   if (match) {
     runtime.status = "running";
     runtime.pid = match.pid;
@@ -1169,8 +1603,12 @@ async function startServer(server, { applyFirewall = false } = {}) {
     return publicServer(server);
   }
 
-  server.launchArgs = applySteamServerName(server.launchArgs, server.profile);
-  await ensureServerSettings(server);
+  server.launchArgs = applyIcarusLaunchArgs(server);
+  await writeIcarusSettings(server);
+  if (server.icarus.prospectMode === "create" && createProspectLine(server.icarus)) {
+    server.icarus.prospectMode = "resume";
+  }
+  scheduleSave();
 
   const shouldApplyFirewall = Boolean(server.firewallAutoApproved || applyFirewall);
   if (shouldApplyFirewall) {
@@ -1198,7 +1636,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
   runtime.startedAt = Date.now();
   runtime.availability = "Starting…";
   runtime.players = 0;
-  runtime.maxPlayers = parseMaxPlayers(server.launchArgs);
+  runtime.maxPlayers = parseMaxPlayers(server);
   addActivity(`Started ${server.profile}`, "success");
   processCache.at = 0;
   appendConsoleLog(server.id, `Started ${server.profile}`, "system");
@@ -1581,6 +2019,9 @@ function copySettings(from, to, flags) {
     to.logLocation = from.logLocation;
     to.updateLogLocation = from.updateLogLocation;
   }
+  if (flags.configFiles) {
+    to.icarus = makeIcarus(from.icarus);
+  }
 }
 
 function timeMatchesMinute(hhmm) {
@@ -1746,6 +2187,65 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { path: target, exists, isDir });
   }
 
+  if (method === "POST" && pathname === "/api/path/browse") {
+    if (!isLoopbackRequest(req)) {
+      return sendJson(res, 403, { error: "Folder picker only works from this PC. Paste the path instead." });
+    }
+    const body = (await readBody(req)) || {};
+    const result = await browseFolderDialog(body.title || "Select Icarus server folder");
+    return sendJson(res, 200, result);
+  }
+
+  if (method === "POST" && pathname === "/api/import/inspect") {
+    const body = (await readBody(req)) || {};
+    const preview = await inspectIcarusInstall(body.source || body.path);
+    return sendJson(res, 200, preview);
+  }
+
+  if (method === "POST" && pathname === "/api/import/start") {
+    const body = (await readBody(req)) || {};
+    const copy = Boolean(body.copy);
+    const dest = String(body.dest || "").trim();
+    const preview = await inspectIcarusInstall(body.source || body.path, { measure: copy });
+    if (copy) {
+      if (!dest) return sendJson(res, 400, { error: "Choose a destination folder for the copy" });
+      if (!preview.copyAllowed) {
+        return sendJson(res, 400, {
+          error: `This folder is ${preview.sizeLabel}. Copies are limited to 20 GB. Use the folder in place instead.`
+        });
+      }
+    }
+    const job = {
+      id: randomUUID(),
+      status: "queued",
+      error: "",
+      copy,
+      source: preview.install,
+      dest: copy ? path.resolve(dest) : preview.install,
+      profile: String(body.profile || preview.profile).trim() || preview.profile,
+      copiedBytes: 0,
+      copiedFiles: 0,
+      totalBytes: preview.bytes,
+      totalFiles: preview.files,
+      cancel: false,
+      server: null
+    };
+    importJobs.set(job.id, job);
+    setTimeout(() => importJobs.delete(job.id), 6 * 60 * 60 * 1000);
+    runImportJob(job).catch(err => {
+      job.status = "error";
+      job.error = err.message || "Import failed";
+    });
+    return sendJson(res, 202, publicImportJob(job));
+  }
+
+  if (method === "GET" && pathname.startsWith("/api/import/jobs/")) {
+    const id = decodeURIComponent(pathname.slice("/api/import/jobs/".length));
+    const job = importJobs.get(id);
+    if (!job) return sendJson(res, 404, { error: "Import job not found" });
+    return sendJson(res, 200, publicImportJob(job));
+  }
+
   if (method === "POST" && pathname === "/api/steamcmd/download") {
     const body = (await readBody(req)) || {};
     const dest = await downloadSteamCmd(body.path || undefined);
@@ -1770,7 +2270,12 @@ async function handleApi(req, res, url) {
     if (!from || !to) return sendJson(res, 404, { error: "Server not found" });
     if (from.id === to.id) return sendJson(res, 400, { error: "Source and target must differ" });
     copySettings(from, to, body.flags || {});
-    if (body.flags?.configFiles) await copyConfigFiles(from, to);
+    if (body.flags?.configFiles) {
+      await copyConfigFiles(from, to);
+      if (to.install) {
+        try { await writeIcarusSettings(to); } catch { /* target install may be empty */ }
+      }
+    }
     scheduleSave();
     addActivity(`Copied settings from ${from.profile} to ${to.profile}`, "success");
     return sendJson(res, 200, publicServer(to));
@@ -1798,6 +2303,20 @@ async function handleApi(req, res, url) {
     if (body.autostartDays) server.autostartDays = normalizeDays(body.autostartDays);
     if (body.shutdownDays) server.shutdownDays = normalizeDays(body.shutdownDays);
     if (typeof server.profile === "string") server.profile = server.profile.trim() || "New Server";
+    if (body.launchArgs !== undefined && !body.icarus) {
+      server.icarus.gamePort = parseGamePort(server.launchArgs);
+      server.icarus.queryPort = parseQueryPort(server.launchArgs);
+    }
+    if (body.profile !== undefined && !body.icarus) {
+      server.launchArgs = applySteamServerName(server.launchArgs, server.profile);
+    }
+    if (body.icarus && typeof body.icarus === "object") {
+      server.icarus = makeIcarus({ ...server.icarus, ...body.icarus });
+      server.launchArgs = applyIcarusLaunchArgs(server);
+      if (server.install) {
+        try { await writeIcarusSettings(server); } catch { /* install path may not exist yet */ }
+      }
+    }
     scheduleSave();
     return sendJson(res, 200, publicServer(server));
   }

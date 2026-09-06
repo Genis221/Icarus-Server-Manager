@@ -1,5 +1,18 @@
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const INTERVALS = ["30 mins", "1 hr", "2 hrs", "4 hrs", "6 hrs", "12 hrs", "24 hrs"];
+const PROSPECT_TYPES = [
+  ["OpenWorld_Styx", "Open World — Styx"],
+  ["OpenWorld_Olympus", "Open World — Olympus"],
+  ["OpenWorld_Prometheus", "Open World — Prometheus"],
+  ["Olympus_Outpost", "Outpost — Olympus"],
+  ["Olympus", "Olympus"],
+  ["Outpost002_Forest", "Outpost — Arcwood"],
+  ["Outpost003_Arctic", "Outpost — Iceholm"],
+  ["Outpost005_Forest", "Outpost — Holdfast"],
+  ["Outpost006_Olympus", "Outpost — Olympus (alt)"],
+  ["Prometheus", "Prometheus"],
+  ["Styx", "Styx"]
+];
 
 const state = {
   servers: [],
@@ -12,13 +25,15 @@ const state = {
   busy: new Set(),
   repairPrompted: new Set(),
   consoleSource: null,
-  consoleServerId: null
+  consoleServerId: null,
+  panel: localStorage.getItem("icarus-panel") || "overview"
 };
 
 const workspace = document.getElementById("workspace");
 const tabsEl = document.getElementById("tabs");
 const toastStack = document.getElementById("toast-stack");
 const infoDialog = document.getElementById("info-dialog");
+const importDialog = document.getElementById("import-dialog");
 const copyDialog = document.getElementById("copy-dialog");
 const confirmDialog = document.getElementById("confirm-dialog");
 const firewallDialog = document.getElementById("firewall-dialog");
@@ -58,6 +73,10 @@ function activeServer() {
 function schedulePatch(id, patch) {
   const server = state.servers.find(s => s.id === id);
   if (!server) return;
+  if (patch.icarus) {
+    server.icarus = { ...(server.icarus || {}), ...patch.icarus };
+    patch = { ...patch, icarus: { ...server.icarus } };
+  }
   Object.assign(server, patch);
   if (patch.profile !== undefined) renderTabs();
   const pending = { ...(state.pendingPatches.get(id) || {}), ...patch };
@@ -115,8 +134,11 @@ function renderTabs() {
   tabsEl.innerHTML = servers.map(server => `
     <button type="button" class="tab ${statusClass(server)} ${server.id === state.activeId ? "active" : ""}"
       data-id="${server.id}" draggable="true" role="tab" aria-selected="${server.id === state.activeId}">
-      <span>${escapeHtml(server.profile || "New Server")}</span>
-      <span class="close" data-close="${server.id}" title="Close">×</span>
+      <span class="tab-copy">
+        <b>${escapeHtml(server.profile || "New Server")}</b>
+        <small>${escapeHtml(statusDisplay(server).label)}</small>
+      </span>
+      <span class="close" data-close="${server.id}" title="Remove">×</span>
     </button>
   `).join("");
 }
@@ -182,8 +204,17 @@ function appendConsoleLine(entry) {
 
 function rconHint(server) {
   const rcon = server.rcon || {};
-  if (!rcon.hasPassword) return "Set AdminPassword in ServerSettings.ini, then use in-game /AdminLogin";
+  if (!rcon.hasPassword && !server.icarus?.adminPassword) return "Set Admin Password below, then use in-game /AdminLogin";
   return "Admin commands are in-game: /AdminLogin, /AdminSay, /KickPlayer, /ReturnToLobby";
+}
+
+function prospectTypeOptions(selected) {
+  const value = selected || "OpenWorld_Styx";
+  const known = new Set(PROSPECT_TYPES.map(([id]) => id));
+  const extra = known.has(value) ? "" : `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)}</option>`;
+  return extra + PROSPECT_TYPES.map(([id, label]) =>
+    `<option value="${escapeHtml(id)}" ${id === value ? "selected" : ""}>${escapeHtml(label)}</option>`
+  ).join("");
 }
 
 function renderServer(server) {
@@ -194,54 +225,37 @@ function renderServer(server) {
   const running = String(server.status).toLowerCase() === "running";
   const updating = String(server.status).toLowerCase() === "updating";
   const busy = state.busy.has(server.id) || updating;
-  const open = key => state.openSections.has(`${server.id}:${key}`) ? "open" : "";
   const statusUi = statusDisplay(server);
+  const icarus = server.icarus || {};
+  const panel = ["overview", "ops", "console"].includes(state.panel) ? state.panel : "overview";
 
   workspace.innerHTML = `
-    <div class="server-page" data-server-id="${server.id}">
-      <div class="server-main">
-        <section class="header-card">
-          <div class="header-top">
-            <label class="field">
-              <span>Profile</span>
-              <input data-field="profile" value="${escapeHtml(server.profile)}" maxlength="80" />
-            </label>
-            <div class="controls-row">
-              <button type="button" class="btn ${running ? "stop" : "start"}" data-action="toggle" ${busy ? "disabled" : ""}>
-                ${running ? "Stop" : "Start"}
-              </button>
-              <button type="button" class="btn primary" data-action="update" ${busy ? "disabled" : ""}>Update / Verify</button>
-            </div>
+    <div class="server-page" data-server-id="${server.id}" data-panel="${panel}" data-prospect="${escapeHtml(icarus.prospectMode || "resume")}">
+      <header class="command-bar">
+        <label class="field profile-field">
+          <span>Active prospect</span>
+          <input data-field="profile" value="${escapeHtml(server.profile)}" maxlength="80" />
+        </label>
+        <nav class="panel-nav" aria-label="Workspace">
+          <button type="button" class="panel-btn" data-panel="overview">Overview</button>
+          <button type="button" class="panel-btn" data-panel="ops">Config</button>
+          <button type="button" class="panel-btn" data-panel="console">Live log</button>
+        </nav>
+        <div class="controls-row">
+          <button type="button" class="btn ${running ? "stop" : "start"}" data-action="toggle" ${busy ? "disabled" : ""}>
+            ${running ? "Stop" : "Start"}
+          </button>
+          <button type="button" class="btn primary" data-action="update" ${busy ? "disabled" : ""}>Update / Verify</button>
+        </div>
+      </header>
+
+      <section class="panel-view" data-view="overview">
+        <div class="hero ${statusUi.tone}">
+          <div>
+            <p class="hero-kicker">Session</p>
+            <h1>${escapeHtml(server.profile)}</h1>
+            <p class="muted">Ports and SteamCMD live on this machine. Switch to Live log after you start a prospect.</p>
           </div>
-
-          <div class="grid-2">
-            <label class="field">
-              <span>Installed Version</span>
-              <input data-field="version" value="${escapeHtml(server.version || "")}" readonly />
-            </label>
-            <div class="field">
-              <span class="field-label">Install Location</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\path\\to\\Icarus Dedicated Server" />
-                <button type="button" class="btn secondary" data-action="validate-install">Set Location</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="field">
-            <span class="field-label">SteamCMD</span>
-            <div class="path-row">
-              <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
-              <button type="button" class="btn secondary" data-action="validate-steamcmd">Browse</button>
-              <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
-            </div>
-          </div>
-
-          <label class="field">
-            <span>Launch Arguments</span>
-            <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder="TheIsland_WP?listen?Port=7777?QueryPort=27015 ..." />
-          </label>
-
           <div class="stats">
             <article class="stat-card ${statusUi.tone}">
               <span>Status</span>
@@ -253,118 +267,182 @@ function renderServer(server) {
             </article>
             <article class="stat-card ${Number(server.players) > 0 ? "good" : ""}">
               <span>Players</span>
-              <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 70}</strong>
+              <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 8}</strong>
             </article>
             <article class="stat-card ${firewallClass(server.firewallStatus)}">
               <span>Firewall</span>
               <strong>${escapeHtml(server.firewallStatus || "Not Checked")}</strong>
             </article>
           </div>
-        </section>
-
-        <div class="configs-heading">
-          <h2>Server Configs</h2>
-          <p>Schedules, backups, INI files, and log paths</p>
         </div>
-
-        <div class="scroll-sections">
-          <section class="section ${open("autostart")}" data-section="autostart">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Automatic Start</button>
-            <div class="section-body">
-              <div class="day-row">${dayChecks("autostartDays", server.autostartDays)}</div>
-              <label class="field"><span>Start Server at</span><input type="time" data-field="autostartTime" value="${escapeHtml(toTimeInput(server.autostartTime))}" /></label>
-              <label class="check-line"><input type="checkbox" data-field="autostartUpdate" ${server.autostartUpdate ? "checked" : ""} /> Perform update (Prior to Server Starting)</label>
+        <div class="overview-grid">
+          <article class="tile">
+            <h2>Install</h2>
+            <label class="field">
+              <span>Installed Version</span>
+              <input data-field="version" value="${escapeHtml(server.version || "")}" readonly />
+            </label>
+            <div class="field">
+              <span class="field-label">Install Location</span>
+              <div class="path-row">
+                <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\IcarusDedicatedServer" />
+                <button type="button" class="btn secondary" data-action="validate-install">Set Location</button>
+              </div>
             </div>
-          </section>
-
-          <section class="section ${open("shutdown")}" data-section="shutdown">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Automatic Shutdown / Restart</button>
-            <div class="section-body">
-              <div class="day-row">${dayChecks("shutdownDays", server.shutdownDays)}</div>
-              <label class="field"><span>Shutdown at</span><input type="time" data-field="shutdownTime" value="${escapeHtml(toTimeInput(server.shutdownTime))}" /></label>
-              <label class="check-line"><input type="checkbox" data-field="performUpdate" ${server.performUpdate ? "checked" : ""} /> Perform update</label>
-              <label class="check-line"><input type="checkbox" data-field="thenRestart" ${server.thenRestart ? "checked" : ""} /> Then restart</label>
+          </article>
+          <article class="tile">
+            <h2>SteamCMD</h2>
+            <div class="field">
+              <span class="field-label">SteamCMD folder</span>
+              <div class="path-row">
+                <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
+                <button type="button" class="btn secondary" data-action="validate-steamcmd">Browse</button>
+              </div>
             </div>
-          </section>
+            <div class="action-row">
+              <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
+            </div>
+          </article>
+            <article class="tile">
+            <h2>Launch</h2>
+            <label class="field">
+              <span>Launch Arguments</span>
+              <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder='-SteamServerName="My Icarus Server" -Port=17777 -QueryPort=27015 -Log' />
+            </label>
+          </article>
+        </div>
+      </section>
 
-          <section class="section ${open("config")}" data-section="config">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Server Configuration</button>
-            <div class="section-body">
+      <section class="panel-view" data-view="ops">
+        <div class="ops-grid">
+          <article class="tile">
+            <h2>Session</h2>
+            <p class="field-hint">Written to ServerSettings.ini. SessionName is ignored by the game — the prospect name above becomes -SteamServerName.</p>
+            <label class="field"><span>Join password</span><input data-icarus="joinPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.joinPassword || "")}" placeholder="Leave empty for public" /></label>
+            <label class="field"><span>Admin password</span><input data-icarus="adminPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.adminPassword || "")}" placeholder="Required for /AdminLogin" /></label>
+            <label class="field"><span>Max players</span><input data-icarus="maxPlayers" type="number" min="1" max="20" value="${escapeHtml(icarus.maxPlayers ?? 8)}" /></label>
+            <label class="check-line"><input type="checkbox" data-icarus="stayOnline" ${icarus.stayOnline !== false ? "checked" : ""} /> Stay online when empty (ShutdownIf* = -1)</label>
+          </article>
+          <article class="tile">
+            <h2>Prospect on start</h2>
+            <p class="field-hint">Boot order is Load, then Resume, then Create. Empty lobby if none apply.</p>
+            <label class="field">
+              <span>Startup mode</span>
+              <select data-icarus="prospectMode">
+                <option value="resume" ${icarus.prospectMode === "resume" ? "selected" : ""}>Resume last prospect</option>
+                <option value="load" ${icarus.prospectMode === "load" ? "selected" : ""}>Load a saved prospect</option>
+                <option value="create" ${icarus.prospectMode === "create" ? "selected" : ""}>Create a new prospect</option>
+                <option value="lobby" ${icarus.prospectMode === "lobby" ? "selected" : ""}>Lobby only</option>
+              </select>
+            </label>
+            <label class="field"><span>Last prospect</span><input value="${escapeHtml(icarus.lastProspectName || "")}" readonly placeholder="Filled by the server after a run" /></label>
+            <label class="field icarus-load"><span>Load prospect name</span><input data-icarus="loadProspect" value="${escapeHtml(icarus.loadProspect || "")}" placeholder="Exact save name" /></label>
+            <div class="icarus-create">
+              <label class="field">
+                <span>Create type</span>
+                <select data-icarus="createType">${prospectTypeOptions(icarus.createType)}</select>
+              </label>
+              <label class="field">
+                <span>Difficulty</span>
+                <select data-icarus="createDifficulty">
+                  <option value="1" ${String(icarus.createDifficulty) === "1" ? "selected" : ""}>1 Easy</option>
+                  <option value="2" ${String(icarus.createDifficulty) === "2" ? "selected" : ""}>2 Medium</option>
+                  <option value="3" ${String(icarus.createDifficulty) === "3" ? "selected" : ""}>3 Hard</option>
+                  <option value="4" ${String(icarus.createDifficulty) === "4" ? "selected" : ""}>4 Extreme</option>
+                </select>
+              </label>
+              <label class="field"><span>Save name</span><input data-icarus="createSave" value="${escapeHtml(icarus.createSave || "")}" placeholder="Required, e.g. MyBase" /></label>
+              <label class="check-line"><input type="checkbox" data-icarus="createHardcore" ${icarus.createHardcore ? "checked" : ""} /> Hardcore (no respawn)</label>
+            </div>
+          </article>
+          <article class="tile">
+            <h2>Lobby permissions</h2>
+            <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsLaunch" ${icarus.allowNonAdminsLaunch !== false ? "checked" : ""} /> Non-admins can launch prospects</label>
+            <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsDelete" ${icarus.allowNonAdminsDelete ? "checked" : ""} /> Non-admins can delete prospect saves</label>
+          </article>
+          <article class="tile">
+            <h2>Ports</h2>
+            <p class="field-hint">UDP. Applied as -Port and -QueryPort on start (not INI).</p>
+            <label class="field"><span>Game port</span><input data-icarus="gamePort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.gamePort ?? 17777)}" /></label>
+            <label class="field"><span>Query port</span><input data-icarus="queryPort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.queryPort ?? 27015)}" /></label>
+          </article>
+          <article class="tile">
+            <h2>Automatic start</h2>
+            <div class="day-row">${dayChecks("autostartDays", server.autostartDays)}</div>
+            <label class="field"><span>Start Server at</span><input type="time" data-field="autostartTime" value="${escapeHtml(toTimeInput(server.autostartTime))}" /></label>
+            <label class="check-line"><input type="checkbox" data-field="autostartUpdate" ${server.autostartUpdate ? "checked" : ""} /> Update before start</label>
+          </article>
+          <article class="tile">
+            <h2>Shutdown / restart</h2>
+            <div class="day-row">${dayChecks("shutdownDays", server.shutdownDays)}</div>
+            <label class="field"><span>Shutdown at</span><input type="time" data-field="shutdownTime" value="${escapeHtml(toTimeInput(server.shutdownTime))}" /></label>
+            <label class="check-line"><input type="checkbox" data-field="performUpdate" ${server.performUpdate ? "checked" : ""} /> Perform update</label>
+            <label class="check-line"><input type="checkbox" data-field="thenRestart" ${server.thenRestart ? "checked" : ""} /> Then restart</label>
+          </article>
+          <article class="tile">
+            <h2>Prospect backups</h2>
+            <label class="field">
+              <span>Interval</span>
+              <select data-field="autoBackupInterval">
+                ${INTERVALS.map(v => `<option value="${v}" ${server.autoBackupInterval === v ? "selected" : ""}>${v}</option>`).join("")}
+              </select>
+            </label>
+            <label class="field">
+              <span>Keep last N backups</span>
+              <input type="number" min="10" max="100" data-field="backupLimit" value="${escapeHtml(server.backupLimit || "10")}" />
+            </label>
+            <div class="field">
+              <span class="field-label">Backup Folder</span>
+              <div class="path-row">
+                <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
+                <button type="button" class="btn secondary" data-action="validate-backup">Browse</button>
+              </div>
+            </div>
+            <div class="action-row">
+              <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
+              <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
+            </div>
+          </article>
+          <article class="tile">
+            <h2>Config &amp; logs</h2>
             <div class="action-row">
               <button type="button" class="btn secondary" data-action="open-gus-ini">Edit ServerSettings.ini</button>
             </div>
-            </div>
-          </section>
-
-          <section class="section ${open("backup")}" data-section="backup">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Automatic World Save Backup</button>
-            <div class="section-body">
-              <label class="field">
-                <span>Interval</span>
-                <select data-field="autoBackupInterval">
-                  ${INTERVALS.map(v => `<option value="${v}" ${server.autoBackupInterval === v ? "selected" : ""}>${v}</option>`).join("")}
-                </select>
-              </label>
-              <label class="field">
-                <span>Keep last N backups</span>
-                <input type="number" min="10" max="100" data-field="backupLimit" value="${escapeHtml(server.backupLimit || "10")}" />
-              </label>
-              <div class="field">
-                <span class="field-label">Backup Folder</span>
-                <div class="path-row">
-                  <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
-                  <button type="button" class="btn secondary" data-action="validate-backup">Browse</button>
-                </div>
-              </div>
-              <div class="action-row">
-                <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
-                <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
+            <div class="field">
+              <span class="field-label">Game Log Location</span>
+              <div class="path-row">
+                <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
+                <button type="button" class="btn secondary" data-action="validate-logs">Browse</button>
               </div>
             </div>
-          </section>
-
-          <section class="section ${open("logs")}" data-section="logs">
-            <button type="button" class="section-toggle"><span class="chev">▶</span> Logs</button>
-            <div class="section-body">
-              <div class="field">
-                <span class="field-label">Game Log Location</span>
-                <div class="path-row">
-                  <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
-                  <button type="button" class="btn secondary" data-action="validate-logs">Browse</button>
-                </div>
-              </div>
-              <div class="field">
-                <span class="field-label">Update Log Location</span>
-                <div class="path-row">
-                  <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
-                  <button type="button" class="btn secondary" data-action="validate-update-logs">Browse</button>
-                </div>
+            <div class="field">
+              <span class="field-label">Update Log Location</span>
+              <div class="path-row">
+                <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
+                <button type="button" class="btn secondary" data-action="validate-update-logs">Browse</button>
               </div>
             </div>
-          </section>
+          </article>
         </div>
-      </div>
+      </section>
 
-      <aside class="server-console">
+      <section class="panel-view" data-view="console">
         <section class="console-panel">
           <div class="console-toolbar">
-            <strong class="console-title">Console</strong>
+            <strong class="console-title">Live log</strong>
             <div class="console-live-status" id="console-live-status" data-state="live"><i></i><b>Live</b></div>
             <span class="console-hint">${escapeHtml(rconHint(server))}</span>
             <div class="console-tools">
               <button type="button" class="btn secondary" data-action="console-clear">Clear</button>
-              <button type="button" class="btn secondary" data-action="console-players">ListPlayers</button>
-              <button type="button" class="btn secondary" data-action="console-getchat">GetChat</button>
             </div>
           </div>
           <div class="console-output" id="console-output"><div class="console-empty">Live Icarus log output will appear here…</div></div>
           <form class="console-command" id="console-form">
-            <label class="chat-toggle" title="Send as ServerChat"><input type="checkbox" id="console-as-chat" /> Chat</label>
-            <input id="console-input" type="text" autocomplete="off" spellcheck="false" placeholder="Notes appear in the live log" />
+            <input id="console-input" type="text" autocomplete="off" spellcheck="false" placeholder="Command notes appear in this log" />
             <button type="submit" class="btn primary">Send</button>
           </form>
         </section>
-      </aside>
+      </section>
     </div>
   `;
 
@@ -391,7 +469,9 @@ async function refreshState({ silent = false } = {}) {
   try {
     const data = await api("/api/state");
     const prevFocus = document.activeElement;
-    const focusKey = prevFocus?.dataset?.field
+    const focusKey = prevFocus?.dataset?.icarus
+      ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:icarus:${prevFocus.dataset.icarus}`
+      : prevFocus?.dataset?.field
       ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:${prevFocus.dataset.field}:${prevFocus.dataset.index ?? ""}`
       : null;
     const selectionStart = prevFocus?.selectionStart;
@@ -420,7 +500,9 @@ async function refreshState({ silent = false } = {}) {
     if (focusKey) {
       const [id, field, index] = focusKey.split(":");
       const el = workspace.querySelector(
-        index !== ""
+        field === "icarus"
+          ? `[data-server-id="${id}"] [data-icarus="${index}"]`
+          : index !== ""
           ? `[data-server-id="${id}"] [data-field="${field}"][data-index="${index}"]`
           : `[data-server-id="${id}"] [data-field="${field}"]`
       );
@@ -467,7 +549,7 @@ function updateLiveStats(server) {
   }
   if (cards[2]) {
     const strong = cards[2].querySelector("strong");
-    if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 70}`;
+    if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 8}`;
     setStatTone(cards[2], playerCount > 0 ? "good" : "");
   }
   if (cards[3]) {
@@ -680,6 +762,170 @@ document.getElementById("btn-add").addEventListener("click", async () => {
   }
 });
 
+let importPreview = null;
+let importPollTimer = null;
+
+function importModeLabel(mode) {
+  return ({ resume: "Resume last prospect", load: "Load prospect", create: "Create prospect", lobby: "Lobby" })[mode] || mode;
+}
+
+function renderImportPreview(preview) {
+  const el = document.getElementById("import-preview");
+  importPreview = preview;
+  const icarus = preview.icarus || {};
+  el.classList.remove("hidden");
+  el.innerHTML = `
+    <div><b>${escapeHtml(preview.profile || "Imported Server")}</b></div>
+    <div>Install: ${escapeHtml(preview.install)}</div>
+    <div>Size: ${escapeHtml(preview.sizeLabel || "unknown")} · ${Number(preview.files) || 0} files${preview.copyAllowed === false ? " · too large to copy (use in place)" : ""}</div>
+    <div>Players: ${escapeHtml(icarus.maxPlayers ?? 8)} · Ports: ${escapeHtml(icarus.gamePort ?? 17777)} / ${escapeHtml(icarus.queryPort ?? 27015)}</div>
+    <div>Startup: ${escapeHtml(importModeLabel(icarus.prospectMode))}${icarus.lastProspectName ? ` · Last: ${escapeHtml(icarus.lastProspectName)}` : ""}</div>
+    <div>Join password: ${icarus.joinPassword ? "set" : "none"} · Admin password: ${icarus.adminPassword ? "set" : "none"}</div>
+    <div>Settings.ini: ${preview.hasSettings ? "found" : "not found yet"}</div>
+  `;
+  const name = document.getElementById("import-profile");
+  if (name && !name.value.trim()) name.value = preview.profile || "";
+  const copy = document.getElementById("import-copy");
+  if (copy && preview.copyAllowed === false) copy.checked = false;
+  document.getElementById("import-dest-wrap")?.classList.toggle("hidden", !document.getElementById("import-copy")?.checked);
+}
+
+async function browseImportPath(targetId, title) {
+  try {
+    const result = await api("/api/path/browse", { method: "POST", body: { title } });
+    if (result.cancelled || !result.path) return;
+    const input = document.getElementById(targetId);
+    if (input) input.value = result.path;
+    if (targetId === "import-source") await scanImportSource();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function scanImportSource() {
+  const source = document.getElementById("import-source")?.value?.trim();
+  if (!source) {
+    toast("Choose a server folder first", "error");
+    return;
+  }
+  try {
+    toast("Reading install…");
+    const preview = await api("/api/import/inspect", { method: "POST", body: { source } });
+    renderImportPreview(preview);
+    toast("Settings loaded", "success");
+  } catch (err) {
+    importPreview = null;
+    document.getElementById("import-preview")?.classList.add("hidden");
+    toast(err.message, "error");
+  }
+}
+
+function setImportProgress(job) {
+  const wrap = document.getElementById("import-progress");
+  const fill = document.getElementById("import-progress-fill");
+  const text = document.getElementById("import-progress-text");
+  wrap?.classList.remove("hidden");
+  const percent = Number(job.percent) || 0;
+  if (fill) fill.style.width = `${percent}%`;
+  if (text) {
+    if (job.status === "copying") {
+      text.textContent = `Copying ${job.sizeLabel || "0 B"} of ${job.totalLabel || "?"} (${percent}%)`;
+    } else if (job.status === "done") {
+      text.textContent = "Import complete";
+      if (fill) fill.style.width = "100%";
+    } else if (job.status === "error") {
+      text.textContent = job.error || "Import failed";
+    } else {
+      text.textContent = "Preparing import…";
+    }
+  }
+}
+
+document.getElementById("btn-import").addEventListener("click", () => {
+  importPreview = null;
+  if (importPollTimer) clearInterval(importPollTimer);
+  importPollTimer = null;
+  const form = document.getElementById("import-form");
+  form?.reset();
+  document.getElementById("import-preview")?.classList.add("hidden");
+  document.getElementById("import-progress")?.classList.add("hidden");
+  document.getElementById("import-dest-wrap")?.classList.add("hidden");
+  document.getElementById("import-submit").disabled = false;
+  importDialog.showModal();
+});
+
+document.getElementById("import-browse-source").addEventListener("click", () => {
+  browseImportPath("import-source", "Select the existing Icarus server folder");
+});
+document.getElementById("import-browse-dest").addEventListener("click", () => {
+  browseImportPath("import-dest", "Select an empty folder to copy into");
+});
+document.getElementById("import-scan").addEventListener("click", () => scanImportSource());
+document.getElementById("import-copy").addEventListener("change", event => {
+  document.getElementById("import-dest-wrap")?.classList.toggle("hidden", !event.target.checked);
+});
+
+document.getElementById("import-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const source = document.getElementById("import-source").value.trim();
+  const profile = document.getElementById("import-profile").value.trim();
+  const copy = document.getElementById("import-copy").checked;
+  const dest = document.getElementById("import-dest").value.trim();
+  if (!source) {
+    toast("Choose a server folder first", "error");
+    return;
+  }
+  if (copy && !dest) {
+    toast("Choose a destination folder for the copy", "error");
+    return;
+  }
+  const submit = document.getElementById("import-submit");
+  submit.disabled = true;
+  try {
+    const job = await api("/api/import/start", {
+      method: "POST",
+      body: { source, dest, copy, profile }
+    });
+    setImportProgress(job);
+    if (job.status === "done" && job.server) {
+      state.activeId = job.server.id;
+      toast(`Imported ${job.server.profile}`, "success");
+      importDialog.close();
+      await refreshState();
+      return;
+    }
+    if (importPollTimer) clearInterval(importPollTimer);
+    importPollTimer = setInterval(async () => {
+      try {
+        const next = await api(`/api/import/jobs/${job.id}`);
+        setImportProgress(next);
+        if (next.status === "done") {
+          clearInterval(importPollTimer);
+          importPollTimer = null;
+          if (next.server) state.activeId = next.server.id;
+          toast(`Imported ${next.server?.profile || profile || "server"}`, "success");
+          importDialog.close();
+          submit.disabled = false;
+          await refreshState();
+        } else if (next.status === "error") {
+          clearInterval(importPollTimer);
+          importPollTimer = null;
+          submit.disabled = false;
+          toast(next.error || "Import failed", "error");
+        }
+      } catch (err) {
+        clearInterval(importPollTimer);
+        importPollTimer = null;
+        submit.disabled = false;
+        toast(err.message, "error");
+      }
+    }, 1000);
+  } catch (err) {
+    submit.disabled = false;
+    toast(err.message, "error");
+  }
+});
+
 document.getElementById("btn-theme").addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
   applyTheme(next);
@@ -692,7 +938,7 @@ function applyTheme(theme) {
   const btn = document.getElementById("btn-theme");
   if (btn) btn.textContent = value === "light" ? "Dark" : "Light";
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = value === "light" ? "#f4f1ea" : "#10141c";
+  if (meta) meta.content = value === "light" ? "#eef2f4" : "#07090d";
 }
 
 applyTheme(localStorage.getItem("icarus-theme") === "light" ? "light" : "dark");
@@ -751,16 +997,15 @@ document.getElementById("copy-form").addEventListener("submit", async event => {
 });
 
 workspace.addEventListener("click", async event => {
-  const toggle = event.target.closest(".section-toggle");
-  if (toggle) {
-    const section = toggle.closest(".section");
-    const key = section?.dataset.section;
-    const server = activeServer();
-    if (!server || !key) return;
-    const full = `${server.id}:${key}`;
-    if (state.openSections.has(full)) state.openSections.delete(full);
-    else state.openSections.add(full);
-    section.classList.toggle("open");
+  const panelBtn = event.target.closest("[data-panel]");
+  if (panelBtn && workspace.contains(panelBtn)) {
+    const next = panelBtn.dataset.panel;
+    if (["overview", "ops", "console"].includes(next)) {
+      state.panel = next;
+      localStorage.setItem("icarus-panel", next);
+      const page = workspace.querySelector(".server-page");
+      if (page) page.dataset.panel = next;
+    }
     return;
   }
 
@@ -848,11 +1093,23 @@ workspace.addEventListener("submit", async event => {
   }
 });
 
-workspace.addEventListener("input", event => {
-  const el = event.target;
-  const field = el.dataset.field;
+function applyControlPatch(el) {
   const server = activeServer();
-  if (!field || !server) return;
+  if (!server) return;
+
+  if (el.dataset.icarus) {
+    const key = el.dataset.icarus;
+    const numeric = ["maxPlayers", "gamePort", "queryPort", "createDifficulty"].includes(key);
+    const value = el.type === "checkbox" ? el.checked : (numeric ? Number(el.value) : el.value);
+    schedulePatch(server.id, { icarus: { [key]: value } });
+    if (key === "prospectMode") {
+      el.closest(".server-page")?.setAttribute("data-prospect", String(value));
+    }
+    return;
+  }
+
+  const field = el.dataset.field;
+  if (!field) return;
 
   if (field === "autostartDays" || field === "shutdownDays") {
     const index = Number(el.dataset.index);
@@ -870,6 +1127,12 @@ workspace.addEventListener("input", event => {
   let value = el.value;
   if (field === "autostartTime" || field === "shutdownTime") value = fromTimeInput(value);
   schedulePatch(server.id, { [field]: value });
+}
+
+workspace.addEventListener("input", event => applyControlPatch(event.target));
+workspace.addEventListener("change", event => {
+  const el = event.target;
+  if (el?.dataset?.icarus || el?.tagName === "SELECT") applyControlPatch(el);
 });
 
 await refreshState();

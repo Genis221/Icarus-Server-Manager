@@ -3,52 +3,58 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#10141c" />
+    <meta name="theme-color" content="#07090d" />
     <title>Icarus Server Manager</title>
     <link rel="icon" href="/icarus-icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icarus-icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
     <script>
       (() => {
         const theme = localStorage.getItem("icarus-theme") === "light" ? "light" : "dark";
         document.documentElement.dataset.theme = theme;
         const meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.content = theme === "light" ? "#f4f1ea" : "#10141c";
+        if (meta) meta.content = theme === "light" ? "#eef2f4" : "#07090d";
       })();
     </script>
   </head>
   <body>
     <div class="app">
-      <header class="toolbar">
-        <div class="toolbar-brand">
-          <img class="brand-mark" src="/icarus-icon.svg" alt="" width="34" height="34" />
+      <aside class="rail">
+        <div class="rail-brand">
+          <img class="brand-mark" src="/icarus-icon.svg" alt="" width="40" height="40" />
           <div>
-            <strong>Icarus Server Manager</strong>
-            <small>Local web control panel</small>
+            <span class="brand-kicker">Prospect control</span>
+            <strong>Icarus</strong>
           </div>
         </div>
-        <div class="toolbar-actions">
-          <button type="button" class="tool-btn" id="btn-theme" title="Toggle theme" aria-label="Toggle theme">Light</button>
-          <button type="button" class="tool-btn" id="btn-info">Icarus Server Manager Info</button>
-          <button type="button" class="tool-btn" id="btn-copy-settings">Copy Server Settings</button>
+        <div class="rail-head">
+          <span>Fleet</span>
+          <div class="rail-head-actions">
+            <button type="button" class="tool-btn" id="btn-import" title="Import existing server">Import</button>
+            <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>
+          </div>
         </div>
-      </header>
-
-      <div class="tab-strip">
         <div class="tabs" id="tabs" role="tablist"></div>
-        <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>
-      </div>
-
+        <div class="rail-foot">
+          <button type="button" class="tool-btn" id="btn-theme" title="Toggle theme" aria-label="Toggle theme">Light</button>
+          <button type="button" class="tool-btn" id="btn-copy-settings">Copy</button>
+          <button type="button" class="tool-btn ghost" id="btn-info">About</button>
+        </div>
+      </aside>
       <main class="workspace" id="workspace">
-        <div class="loading-view"><div class="spinner"></div><p>Loading profiles…</p></div>
+        <div class="loading-view"><div class="spinner"></div><p>Loading fleet…</p></div>
       </main>
     </div>
 
     <dialog id="info-dialog" class="modal">
       <div class="modal-body">
-        <h2>Icarus Server Manager</h2>
-        <p>Web edition v1.0 — local control panel for Icarus dedicated servers.</p>
-        <p class="muted">Web control panel for Icarus dedicated servers.</p>
+        <p class="modal-kicker">Icarus</p>
+        <h2>Server Manager</h2>
+        <p>Local web control panel for Icarus dedicated servers — start, update, schedule, back up, and open firewall ports from this machine.</p>
+        <p class="muted">Web edition v1.0</p>
         <div class="modal-actions">
           <button type="button" class="btn secondary" data-close>Close</button>
         </div>
@@ -57,7 +63,8 @@
 
     <dialog id="copy-dialog" class="modal">
       <form id="copy-form" class="modal-body">
-        <h2>Copy Server Settings</h2>
+        <p class="modal-kicker">Profiles</p>
+        <h2>Copy server settings</h2>
         <p class="muted">Copy selected settings from one server profile to another.</p>
         <label class="field">
           <span>Copy FROM</span>
@@ -82,6 +89,48 @@
       </form>
     </dialog>
 
+    <dialog id="import-dialog" class="modal">
+      <form id="import-form" class="modal-body">
+        <p class="modal-kicker">Fleet</p>
+        <h2>Import server</h2>
+        <p class="muted">Point at an existing Icarus dedicated server folder. Settings, name, ports, and prospect info are read from ServerSettings.ini and launch scripts. Copies stay on this PC (up to 20 GB).</p>
+        <div class="field">
+          <span class="field-label">Server folder</span>
+          <div class="path-row">
+            <input class="inline-input" id="import-source" name="source" required placeholder="C:\IcarusDedicatedServer" />
+            <button type="button" class="btn secondary" id="import-browse-source">Browse</button>
+          </div>
+        </div>
+        <div class="action-row">
+          <button type="button" class="btn secondary" id="import-scan">Read settings</button>
+        </div>
+        <div id="import-preview" class="import-preview hidden"></div>
+        <label class="field">
+          <span>Profile name</span>
+          <input id="import-profile" name="profile" placeholder="Pulled from the install when you scan" />
+        </label>
+        <label class="check-line">
+          <input type="checkbox" id="import-copy" name="copy" />
+          Copy the folder to a new location (up to 20 GB)
+        </label>
+        <div class="field hidden" id="import-dest-wrap">
+          <span class="field-label">Copy to (empty or new folder)</span>
+          <div class="path-row">
+            <input class="inline-input" id="import-dest" name="dest" placeholder="D:\IcarusServers\MyServer" />
+            <button type="button" class="btn secondary" id="import-browse-dest">Browse</button>
+          </div>
+        </div>
+        <div id="import-progress" class="import-progress hidden">
+          <div class="import-progress-bar"><i id="import-progress-fill"></i></div>
+          <p id="import-progress-text" class="muted">Copying…</p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" data-close>Cancel</button>
+          <button type="submit" class="btn primary" id="import-submit">Import</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="confirm-dialog" class="modal">
       <div class="modal-body">
         <h2 id="confirm-title">Confirm</h2>
@@ -95,6 +144,7 @@
 
     <dialog id="firewall-dialog" class="modal">
       <div class="modal-body">
+        <p class="modal-kicker">Windows Firewall</p>
         <h2>Allow firewall rules?</h2>
         <p id="firewall-message">
           Allow Icarus Manager to add Windows firewall rules for this server’s game and query ports when it starts?
@@ -110,7 +160,8 @@
 
     <dialog id="repair-dialog" class="modal">
       <div class="modal-body">
-        <h2>SteamCMD repair needed</h2>
+        <p class="modal-kicker">SteamCMD</p>
+        <h2>Repair needed</h2>
         <p id="repair-message">
           SteamCMD reported app state 0x6 (stuck or corrupt install). Repair deletes everything under the install folder
           except Icarus\Saved (worlds and configs), then redownloads the server.
