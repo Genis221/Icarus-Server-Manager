@@ -977,7 +977,7 @@ document.getElementById("copy-form").addEventListener("submit", async event => {
 });
 
 workspace.addEventListener("click", async event => {
-  const panelBtn = event.target.closest("[data-panel]");
+  const panelBtn = event.target.closest(".panel-btn[data-panel]");
   if (panelBtn && workspace.contains(panelBtn)) {
     const next = panelBtn.dataset.panel;
     if (["overview", "ops", "console"].includes(next)) {
