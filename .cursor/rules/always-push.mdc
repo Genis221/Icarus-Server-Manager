@@ -1,10 +1,10 @@
 ---
-description: Always push commits to origin after committing in this repo
+description: Always commit finished work and push to origin
 alwaysApply: true
 ---
 
-# Always push
+# Always commit and push
 
-When committing changes in this repository, also push to `origin` on the current branch unless the user explicitly says not to push.
+After finishing a code change in this repository, create a git commit and push it to `origin` on the current branch in the same turn. Do not ask "want me to commit?" or "want me to push?"
 
-Prefer: commit → push in the same turn. Do not ask "want me to push?" — just push.
+Skip commit/push only if the user explicitly says not to, or there is nothing to commit.

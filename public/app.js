@@ -285,19 +285,17 @@ function renderServer(server) {
             <div class="field">
               <span class="field-label">Install Location</span>
               <div class="path-row">
-                <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\IcarusDedicatedServer" />
-                <button type="button" class="btn secondary" data-action="validate-install">Set Location</button>
+                <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\IcarusDedicatedServer or ...\\IcarusServer.exe" />
+                <button type="button" class="btn secondary" data-action="attach-install">Attach</button>
               </div>
             </div>
+            ${server.exe ? `<p class="field-hint">Running: ${escapeHtml(server.exe)}</p>` : `<p class="field-hint">Point this at the folder that contains IcarusServer.exe, then Attach.</p>`}
           </article>
           <article class="tile">
             <h2>SteamCMD</h2>
             <div class="field">
               <span class="field-label">SteamCMD folder</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
-                <button type="button" class="btn secondary" data-action="validate-steamcmd">Browse</button>
-              </div>
+              <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
             </div>
             <div class="action-row">
               <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
@@ -790,18 +788,6 @@ function renderImportPreview(preview) {
   document.getElementById("import-dest-wrap")?.classList.toggle("hidden", !document.getElementById("import-copy")?.checked);
 }
 
-async function browseImportPath(targetId, title) {
-  try {
-    const result = await api("/api/path/browse", { method: "POST", body: { title } });
-    if (result.cancelled || !result.path) return;
-    const input = document.getElementById(targetId);
-    if (input) input.value = result.path;
-    if (targetId === "import-source") await scanImportSource();
-  } catch (err) {
-    toast(err.message, "error");
-  }
-}
-
 async function scanImportSource() {
   const source = document.getElementById("import-source")?.value?.trim();
   if (!source) {
@@ -854,12 +840,6 @@ document.getElementById("btn-import").addEventListener("click", () => {
   importDialog.showModal();
 });
 
-document.getElementById("import-browse-source").addEventListener("click", () => {
-  browseImportPath("import-source", "Select the existing Icarus server folder");
-});
-document.getElementById("import-browse-dest").addEventListener("click", () => {
-  browseImportPath("import-dest", "Select an empty folder to copy into");
-});
 document.getElementById("import-scan").addEventListener("click", () => scanImportSource());
 document.getElementById("import-copy").addEventListener("change", event => {
   document.getElementById("import-dest-wrap")?.classList.toggle("hidden", !event.target.checked);
@@ -1045,10 +1025,17 @@ workspace.addEventListener("click", async event => {
     } else if (action === "open-gus-ini") {
       await api(`/api/servers/${server.id}/open-ini`, { method: "POST", body: { kind: "settings" } });
       toast("Opened ServerSettings.ini");
-    } else if (action === "validate-install") {
-      await validatePath("install", "Install");
-    } else if (action === "validate-steamcmd") {
-      await validatePath("steamcmd", "SteamCMD");
+    } else if (action === "attach-install") {
+      const target = String(server.install || "").trim();
+      if (!target) {
+        toast("Enter the Icarus folder or IcarusServer.exe path first", "error");
+        return;
+      }
+      const attached = await api(`/api/servers/${server.id}/attach`, { method: "POST", body: { path: target } });
+      const idx = state.servers.findIndex(s => s.id === server.id);
+      if (idx >= 0) state.servers[idx] = { ...state.servers[idx], ...attached };
+      toast(`Attached to ${attached.exe || attached.install}`, "success");
+      await refreshState();
     } else if (action === "validate-backup") {
       await validatePath("autoBackupDest", "Backup");
     } else if (action === "validate-logs") {

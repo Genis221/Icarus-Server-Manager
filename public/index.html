@@ -93,14 +93,11 @@
       <form id="import-form" class="modal-body">
         <p class="modal-kicker">Fleet</p>
         <h2>Import server</h2>
-        <p class="muted">Point at an existing Icarus dedicated server folder. Settings, name, ports, and prospect info are read from ServerSettings.ini and launch scripts. Copies stay on this PC (up to 20 GB).</p>
-        <div class="field">
-          <span class="field-label">Server folder</span>
-          <div class="path-row">
-            <input class="inline-input" id="import-source" name="source" required placeholder="C:\IcarusDedicatedServer" />
-            <button type="button" class="btn secondary" id="import-browse-source">Browse</button>
-          </div>
-        </div>
+        <p class="muted">Paste the Icarus dedicated server folder (or the path to IcarusServer.exe). Settings, name, ports, and prospect info are read from ServerSettings.ini and launch scripts. Copies stay on this PC (up to 20 GB).</p>
+        <label class="field">
+          <span>Server folder or IcarusServer.exe</span>
+          <input class="inline-input" id="import-source" name="source" required placeholder="C:\IcarusDedicatedServer" />
+        </label>
         <div class="action-row">
           <button type="button" class="btn secondary" id="import-scan">Read settings</button>
         </div>
@@ -114,11 +111,8 @@
           Copy the folder to a new location (up to 20 GB)
         </label>
         <div class="field hidden" id="import-dest-wrap">
-          <span class="field-label">Copy to (empty or new folder)</span>
-          <div class="path-row">
-            <input class="inline-input" id="import-dest" name="dest" placeholder="D:\IcarusServers\MyServer" />
-            <button type="button" class="btn secondary" id="import-browse-dest">Browse</button>
-          </div>
+          <span>Copy to (empty or new folder)</span>
+          <input class="inline-input" id="import-dest" name="dest" placeholder="D:\IcarusServers\MyServer" />
         </div>
         <div id="import-progress" class="import-progress hidden">
           <div class="import-progress-bar"><i id="import-progress-fill"></i></div>

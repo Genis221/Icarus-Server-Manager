@@ -39,6 +39,7 @@ const MAX_IMPORT_COPY_BYTES = 20 * 1024 * 1024 * 1024;
 const STEAM_APP_ID = "2089300";
 const STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip";
 const EXE_NAME = "IcarusServer-Win64-Shipping.exe";
+const EXE_NAMES = ["IcarusServer.exe", EXE_NAME];
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const BACKUP_INTERVALS = {
   "30 mins": 30,
@@ -90,6 +91,7 @@ function makeServer(partial = {}) {
     id: partial.id || randomUUID(),
     profile: String(partial.profile || partial.name || "New Server").trim() || "New Server",
     install: String(partial.install || partial.folder || "").trim(),
+    exe: String(partial.exe || "").trim(),
     steamcmd: String(partial.steamcmd || "").trim(),
     version: String(partial.version || "").trim(),
     launchArgs: String(partial.launch_args ?? partial.launchArgs ?? "").trim() || defaultLaunchArgs(partial.profile || partial.name || "New Server"),
@@ -268,11 +270,20 @@ function parseMaxPlayers(serverOrArgs) {
 
 function exeCandidates(server) {
   const install = server.install || "";
-  return [
-    path.join(install, "Icarus", "Binaries", "Win64", EXE_NAME),
-    path.join(install, EXE_NAME),
-    path.join(install, "IcarusServer.exe")
+  const attached = String(server.exe || "").trim();
+  const names = EXE_NAMES;
+  const dirs = [
+    install,
+    path.join(install, "Icarus"),
+    path.join(install, "Icarus", "Binaries", "Win64"),
+    path.join(install, "Binaries", "Win64")
   ];
+  const out = [];
+  if (attached) out.push(attached);
+  for (const dir of dirs) {
+    for (const name of names) out.push(path.join(dir, name));
+  }
+  return [...new Set(out)];
 }
 
 function exePathFor(server) {
@@ -284,6 +295,40 @@ async function resolveExePath(server) {
     if (await pathExists(candidate)) return candidate;
   }
   return exePathFor(server);
+}
+
+function installRootFromExe(exePath) {
+  let dir = path.dirname(path.resolve(exePath));
+  if (/[\\/]Binaries[\\/]Win64$/i.test(dir)) {
+    const icarusDir = path.dirname(path.dirname(dir));
+    if (path.basename(icarusDir).toLowerCase() === "icarus") {
+      return path.dirname(icarusDir);
+    }
+    return icarusDir;
+  }
+  if (path.basename(dir).toLowerCase() === "icarus") return path.dirname(dir);
+  return dir;
+}
+
+async function attachToIcarusInstall(input) {
+  const target = path.resolve(String(input || "").trim());
+  if (!target) throw Object.assign(new Error("Choose the Icarus install folder or IcarusServer.exe"), { status: 400 });
+  if (!(await pathExists(target))) throw Object.assign(new Error("That path does not exist"), { status: 404 });
+  const st = await stat(target);
+  if (st.isFile()) {
+    const base = path.basename(target);
+    if (!/^IcarusServer/i.test(base) || !/\.exe$/i.test(base)) {
+      throw Object.assign(new Error("Attach to IcarusServer.exe (or IcarusServer-Win64-Shipping.exe)"), { status: 400 });
+    }
+    const install = installRootFromExe(target);
+    return { install, exe: target };
+  }
+  const install = await resolveIcarusInstallRoot(target);
+  const exe = await resolveExePath({ install, exe: "" });
+  if (!(await pathExists(exe))) {
+    throw Object.assign(new Error("Could not find IcarusServer.exe in that folder"), { status: 400 });
+  }
+  return { install, exe };
 }
 
 function settingsIniPath(server) {
@@ -481,14 +526,14 @@ async function readBody(req, limit = MAX_BODY) {
 function publicServer(server, rcon = null) {
   const runtime = runtimeOf(server.id);
   const {
-    id, profile, install, steamcmd, version, launchArgs,
+    id, profile, install, exe, steamcmd, version, launchArgs,
     autostartDays, autostartTime, autostartUpdate,
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
     logLocation, updateLogLocation, firewallStatus, firewallAutoApproved, lastBackupAt, order, icarus
   } = server;
   return {
-    id, profile, install, steamcmd, version, launchArgs,
+    id, profile, install, exe, steamcmd, version, launchArgs,
     autostartDays, autostartTime, autostartUpdate,
     shutdownDays, shutdownTime, performUpdate, thenRestart,
     autoBackupEnabled, autoBackupInterval, autoBackupDest, backupLimit,
@@ -666,7 +711,7 @@ async function resolveIcarusInstallRoot(input) {
     if (parent === current) break;
     current = parent;
   }
-  throw Object.assign(new Error("That folder does not look like an Icarus dedicated server (missing IcarusServer-Win64-Shipping.exe)"), { status: 400 });
+  throw Object.assign(new Error("That folder does not look like an Icarus server (missing IcarusServer.exe)"), { status: 400 });
 }
 
 async function readLaunchHints(install) {
@@ -841,9 +886,11 @@ async function runImportJob(job) {
       await copyInstallTree(job.source, job.dest, job);
     }
     const preview = await inspectIcarusInstall(install, { measure: false });
+    const attached = await attachToIcarusInstall(install);
     const server = makeServer({
       profile: job.profile || preview.profile,
-      install,
+      install: attached.install,
+      exe: attached.exe,
       steamcmd: preview.steamcmd,
       version: preview.version,
       launchArgs: preview.launchArgs,
@@ -1271,7 +1318,7 @@ async function listArkProcesses() {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process -Filter \"Name='IcarusServer-Win64-Shipping.exe'\" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'IcarusServer.exe' -or $_.Name -eq 'IcarusServer-Win64-Shipping.exe' } | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
       ],
       { windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
     );
@@ -1297,11 +1344,19 @@ async function getArkProcessesCached(maxAgeMs = 2500) {
   return processCache.procs;
 }
 
-async function findProcessForInstall(install, procs = null) {
+async function findProcessForInstall(serverOrInstall, procs = null) {
+  const server = serverOrInstall && typeof serverOrInstall === "object" ? serverOrInstall : { install: serverOrInstall };
+  const install = String(server.install || "").trim();
   if (!install) return null;
   const target = path.normalize(install).toLowerCase();
+  const attached = path.normalize(String(server.exe || "")).toLowerCase();
   const list = procs || await getArkProcessesCached();
-  return list.find(p => path.normalize(p.exe || "").toLowerCase().includes(target)) || null;
+  return list.find(p => {
+    const exe = path.normalize(p.exe || "").toLowerCase();
+    if (!exe) return false;
+    if (attached && exe === attached) return true;
+    return exe.includes(target);
+  }) || null;
 }
 
 function countPlayersFromListPlayers(text) {
@@ -1330,7 +1385,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.status = "Updating";
     return;
   }
-  const match = await findProcessForInstall(server.install, procs);
+  const match = await findProcessForInstall(server, procs);
   runtime.maxPlayers = parseMaxPlayers(server);
   if (match) {
     runtime.status = "running";
@@ -1592,9 +1647,10 @@ async function startServer(server, { applyFirewall = false } = {}) {
   if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
   const exe = await resolveExePath(server);
   if (!(await pathExists(exe))) {
-    throw Object.assign(new Error(`Server executable not found:\n${exe}`), { status: 404 });
+    throw Object.assign(new Error(`IcarusServer.exe was not found in:\n${server.install}`), { status: 404 });
   }
-  const existing = await findProcessForInstall(server.install);
+  server.exe = exe;
+  const existing = await findProcessForInstall(server);
   if (existing) {
     runtime.status = "running";
     runtime.pid = existing.pid;
@@ -1664,7 +1720,7 @@ async function stopServer(server, { copyLog = true } = {}) {
     }
   }
 
-  const match = await findProcessForInstall(server.install);
+  const match = await findProcessForInstall(server);
   const pid = match?.pid || runtime.pid;
   if (pid) await terminatePid(pid);
 
@@ -1825,10 +1881,6 @@ function spawnSteamCmdUpdate(server, steamcmdExe) {
 
 async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
   const runtime = runtimeOf(server.id);
-  const steamcmdExe = path.join(server.steamcmd, "steamcmd.exe");
-  if (!(await pathExists(steamcmdExe))) {
-    throw Object.assign(new Error("SteamCMD.exe was not found"), { status: 400 });
-  }
   if (!server.install) {
     throw Object.assign(new Error("Install location is not set"), { status: 400 });
   }
@@ -1842,10 +1894,23 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
   runtime.needsRepair = false;
   addActivity(`Updating ${server.profile} via SteamCMD`, "info");
   appendConsoleLog(server.id, `=== Update / Verify started for ${server.profile} ===`, "system");
+  appendConsoleLog(server.id, `Install folder: ${server.install}`, "system");
 
   try {
-    // SteamCMD 0x6 is often caused by locked files or a stuck appmanifest.
-    const running = await findProcessForInstall(server.install);
+    let steamcmdExe = path.join(server.steamcmd || "", "steamcmd.exe");
+    if (!(await pathExists(steamcmdExe))) {
+      appendConsoleLog(server.id, "SteamCMD.exe was not found — downloading it so this update can run…", "system");
+      const dest = await downloadSteamCmd(server.steamcmd || undefined);
+      server.steamcmd = dest;
+      steamcmdExe = path.join(dest, "steamcmd.exe");
+      scheduleSave();
+      if (!(await pathExists(steamcmdExe))) {
+        throw Object.assign(new Error("SteamCMD download finished but steamcmd.exe is missing"), { status: 500 });
+      }
+      appendConsoleLog(server.id, `SteamCMD ready at ${dest}`, "system");
+    }
+
+    const running = await findProcessForInstall(server);
     if (running) {
       appendConsoleLog(server.id, "Server is running — stopping it before update…", "system");
       await stopServer(server, { copyLog: false });
@@ -1868,6 +1933,7 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
       // bootstrap may exit non-zero
     }
 
+    appendConsoleLog(server.id, `Updating/validating app ${STEAM_APP_ID} into ${server.install}`, "system");
     let result = await spawnSteamCmdUpdate(server, steamcmdExe);
     let hit06 = /state is 0x6/i.test(result.output);
 
@@ -1887,6 +1953,13 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
       );
       addActivity(`Update hit 0x6 for ${server.profile} — repair recommended`, "error");
     } else if (result.code === 0) {
+      const exe = await resolveExePath(server);
+      if (await pathExists(exe)) {
+        server.exe = exe;
+        appendConsoleLog(server.id, `Attached to ${exe}`, "system");
+      } else {
+        appendConsoleLog(server.id, "Update finished, but IcarusServer.exe was not found in the install folder.", "error");
+      }
       appendConsoleLog(server.id, "Update / Verify finished successfully.", "system");
       addActivity(`Update finished for ${server.profile}`, "success");
       try {
@@ -2288,6 +2361,17 @@ async function handleApi(req, res, url) {
   const action = match[2] || "";
 
   if (method === "GET" && !action) return sendJson(res, 200, publicServer(server));
+
+  if (method === "POST" && action === "attach") {
+    const body = (await readBody(req)) || {};
+    const target = String(body.path || server.install || "").trim();
+    const attached = await attachToIcarusInstall(target);
+    server.install = attached.install;
+    server.exe = attached.exe;
+    scheduleSave();
+    addActivity(`Attached ${server.profile} to ${attached.exe}`, "success");
+    return sendJson(res, 200, publicServer(server));
+  }
 
   if (method === "PATCH" && !action) {
     const body = (await readBody(req)) || {};
