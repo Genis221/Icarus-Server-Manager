@@ -198,8 +198,10 @@ function appendConsoleLine(entry) {
   line.className = `console-line ${entry.level || "info"}`;
   const time = new Date(entry.time || Date.now()).toLocaleTimeString();
   line.innerHTML = `<time>${escapeHtml(time)}</time><span>${escapeHtml(entry.message || "")}</span>`;
+  const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   el.appendChild(line);
   while (el.children.length > 600) el.removeChild(el.firstChild);
+  if (stick) el.scrollTop = el.scrollHeight;
 }
 
 function rconHint(server) {

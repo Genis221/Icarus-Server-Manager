@@ -453,9 +453,11 @@ button { cursor: pointer; }
   border: 1px solid rgba(45, 212, 191, 0.14);
   border-radius: 22px;
   overflow: hidden;
-  min-height: calc(100vh - 140px);
+  height: min(520px, calc(100vh - 148px));
+  max-height: min(520px, calc(100vh - 148px));
+  min-height: 280px;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 .console-toolbar {
   display: flex;
@@ -492,12 +494,14 @@ button { cursor: pointer; }
 .console-hint { color: #8b97ad; font-size: 11px; flex: 1; }
 .console-output {
   overflow: auto;
+  overflow-x: hidden;
   padding: 14px 16px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.65;
   color: var(--console-ink);
   min-height: 0;
+  height: 100%;
 }
 .console-empty { color: #66758a; padding: 18px 0; }
 .console-line {
@@ -654,7 +658,8 @@ button { cursor: pointer; }
   align-items: start;
 }
 .server-page[data-panel="console"] .panel-view[data-view="console"] {
-  min-height: calc(100vh - 72px);
+  min-height: 0;
+  align-content: start;
 }
 .hero { gap: 10px; padding: 10px 12px; border-radius: 12px; box-shadow: none; align-items: start; }
 .hero .muted { display: none; }
@@ -684,7 +689,7 @@ button { cursor: pointer; }
 .stat-card strong { font-size: 12px; gap: 5px; }
 .day-row { gap: 4px; }
 .day-row label { gap: 4px; padding: 3px 7px; font-size: 11px; }
-.console-panel { border-radius: 12px; min-height: calc(100vh - 72px); }
+.console-panel { border-radius: 12px; height: min(480px, calc(100vh - 120px)); max-height: min(480px, calc(100vh - 120px)); min-height: 240px; }
 .console-toolbar { gap: 8px; padding: 7px 10px; }
 .console-command { padding: 8px; }
 .console-command input[type="text"] { height: 30px; border-radius: 8px; }
