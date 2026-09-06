@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#10141c" />
+    <title>Icarus Server Manager</title>
+    <link rel="icon" href="/icarus-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icarus-icon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script>
+      (() => {
+        const theme = localStorage.getItem("icarus-theme") === "light" ? "light" : "dark";
+        document.documentElement.dataset.theme = theme;
+        const meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.content = theme === "light" ? "#f4f1ea" : "#10141c";
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="app">
+      <header class="toolbar">
+        <div class="toolbar-brand">
+          <img class="brand-mark" src="/icarus-icon.svg" alt="" width="34" height="34" />
+          <div>
+            <strong>Icarus Server Manager</strong>
+            <small>Local web control panel</small>
+          </div>
+        </div>
+        <div class="toolbar-actions">
+          <button type="button" class="tool-btn" id="btn-theme" title="Toggle theme" aria-label="Toggle theme">Light</button>
+          <button type="button" class="tool-btn" id="btn-info">Icarus Server Manager Info</button>
+          <button type="button" class="tool-btn" id="btn-copy-settings">Copy Server Settings</button>
+        </div>
+      </header>
+
+      <div class="tab-strip">
+        <div class="tabs" id="tabs" role="tablist"></div>
+        <button type="button" class="plus-btn" id="btn-add" title="New Server" aria-label="New Server">+</button>
+      </div>
+
+      <main class="workspace" id="workspace">
+        <div class="loading-view"><div class="spinner"></div><p>Loading profiles…</p></div>
+      </main>
+    </div>
+
+    <dialog id="info-dialog" class="modal">
+      <div class="modal-body">
+        <h2>Icarus Server Manager</h2>
+        <p>Web edition v1.0 — local control panel for Icarus dedicated servers.</p>
+        <p class="muted">Web control panel for Icarus dedicated servers.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" data-close>Close</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="copy-dialog" class="modal">
+      <form id="copy-form" class="modal-body">
+        <h2>Copy Server Settings</h2>
+        <p class="muted">Copy selected settings from one server profile to another.</p>
+        <label class="field">
+          <span>Copy FROM</span>
+          <select name="fromId" id="copy-from" required></select>
+        </label>
+        <label class="field">
+          <span>Copy TO</span>
+          <select name="toId" id="copy-to" required></select>
+        </label>
+        <div class="check-grid">
+          <label><input type="checkbox" name="launchArgs" checked /> Launch Arguments</label>
+          <label><input type="checkbox" name="autoStart" checked /> Automatic Start</label>
+          <label><input type="checkbox" name="shutdown" checked /> Automatic Shutdown / Restart</label>
+          <label><input type="checkbox" name="backup" checked /> Automatic World Save Backup</label>
+          <label><input type="checkbox" name="logs" checked /> Game and Update Log Locations</label>
+          <label><input type="checkbox" name="configFiles" checked /> Server Config File: ServerSettings.ini</label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" data-close>Cancel</button>
+          <button type="submit" class="btn primary">Copy</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="modal">
+      <div class="modal-body">
+        <h2 id="confirm-title">Confirm</h2>
+        <p id="confirm-message"></p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" id="confirm-cancel">Cancel</button>
+          <button type="button" class="btn danger" id="confirm-ok">Delete</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="firewall-dialog" class="modal">
+      <div class="modal-body">
+        <h2>Allow firewall rules?</h2>
+        <p id="firewall-message">
+          Allow Icarus Manager to add Windows firewall rules for this server’s game and query ports when it starts?
+          Choose Allow once and you will not be asked again for this profile.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" id="firewall-cancel">Cancel start</button>
+          <button type="button" class="btn secondary" id="firewall-skip">Start without firewall</button>
+          <button type="button" class="btn primary" id="firewall-allow">Allow &amp; start</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="repair-dialog" class="modal">
+      <div class="modal-body">
+        <h2>SteamCMD repair needed</h2>
+        <p id="repair-message">
+          SteamCMD reported app state 0x6 (stuck or corrupt install). Repair deletes everything under the install folder
+          except Icarus\Saved (worlds and configs), then redownloads the server.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" id="repair-cancel">Not now</button>
+          <button type="button" class="btn danger" id="repair-ok">Repair &amp; Redownload</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

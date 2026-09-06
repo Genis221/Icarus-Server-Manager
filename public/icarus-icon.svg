@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Icarus">
+  <defs>
+    <linearGradient id="g" x1="12" y1="8" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f3c15a"/>
+      <stop offset="1" stop-color="#d46a2c"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#161c27"/>
+  <circle cx="32" cy="34" r="14" fill="url(#g)"/>
+  <path d="M12 28c8-10 14-14 20-14s12 4 20 14c-7-4-13-6-20-6s-13 2-20 6z" fill="#f6e2b3" opacity=".9"/>
+  <path d="M18 40c6 8 10 12 14 12s8-4 14-12c-5 3-9 5-14 5s-9-2-14-5z" fill="#7a3a1c" opacity=".45"/>
+</svg>

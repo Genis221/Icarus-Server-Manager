@@ -1,0 +1,10 @@
+---
+description: Always push commits to origin after committing in this repo
+alwaysApply: true
+---
+
+# Always push
+
+When committing changes in this repository, also push to `origin` on the current branch unless the user explicitly says not to push.
+
+Prefer: commit → push in the same turn. Do not ask "want me to push?" — just push.
