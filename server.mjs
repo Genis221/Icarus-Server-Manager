@@ -224,6 +224,7 @@ function runtimeOf(id) {
       status: "stopped",
       availability: "Offline",
       players: 0,
+      playerNames: [],
       maxPlayers: 8,
       pid: null,
       startedAt: 0,
@@ -542,6 +543,7 @@ function publicServer(server, rcon = null) {
     status: runtime.updating ? "Updating" : runtime.status,
     availability: runtime.availability,
     players: runtime.players,
+    playerNames: Array.isArray(runtime.playerNames) ? runtime.playerNames : [],
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
@@ -1268,6 +1270,97 @@ function queryA2sInfo(host, port, timeoutMs = 700) {
   });
 }
 
+function queryA2sPlayers(host, port, timeoutMs = 800) {
+  return new Promise(resolve => {
+    const sock = dgram.createSocket("udp4");
+    const challengeReq = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch { /* ignore */ }
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    sock.on("message", msg => {
+      try {
+        if (msg.length >= 9 && msg[4] === 0x41) {
+          sock.send(Buffer.concat([
+            Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55]),
+            msg.subarray(5, 9)
+          ]), port, host);
+          return;
+        }
+        if (msg.length < 6 || msg[4] !== 0x44) return;
+        let offset = 5;
+        const count = msg[offset++];
+        const names = [];
+        for (let i = 0; i < count && offset < msg.length; i++) {
+          offset += 1;
+          let name;
+          [name, offset] = readCString(msg, offset);
+          offset += 8;
+          const cleaned = String(name || "").trim();
+          if (cleaned) names.push(cleaned);
+        }
+        finish(names);
+      } catch {
+        // keep waiting until timeout
+      }
+    });
+    sock.on("error", () => finish(null));
+    sock.send(challengeReq, port, host, err => {
+      if (err) finish(null);
+    });
+  });
+}
+
+async function queryLocalA2sPlayers(port) {
+  const hosts = ["127.0.0.1"];
+  const lan = lanAddresses();
+  if (lan[0]) hosts.push(lan[0]);
+  const seen = new Set();
+  for (const host of hosts) {
+    if (!host || seen.has(host)) continue;
+    seen.add(host);
+    const names = await queryA2sPlayers(host, port, 700);
+    if (names) return names;
+  }
+  return null;
+}
+
+function playerNamesFromLogText(text) {
+  const names = new Set();
+  const lines = String(text || "").split(/\r?\n/);
+  const join = /(?:logged in|has joined|joined the (?:server|game|session)|connected to server).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
+  const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?([^"\r\n]{2,32})"?/i;
+  const leave = /(?:logged out|has left|disconnected|Removing P2P).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
+  for (const line of lines) {
+    let match = line.match(leave);
+    if (match) {
+      const name = (match[1] || match[2] || "").trim();
+      if (name) names.delete(name);
+      continue;
+    }
+    match = line.match(join) || line.match(named);
+    if (match) {
+      const name = (match[1] || match[2] || "").trim();
+      if (name && !/^(unknown|null|none|player)$/i.test(name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+
+async function playerNamesFromLogs(server) {
+  try {
+    const text = await readLogTail(shooterLogPath(server), 512 * 1024);
+    return playerNamesFromLogText(text);
+  } catch {
+    return [];
+  }
+}
+
 async function queryLocalA2s(port) {
   // Prefer loopback first — ASA often ignores Steam query entirely, so keep this cheap.
   const hosts = ["127.0.0.1"];
@@ -1379,8 +1472,24 @@ async function queryPlayerCountViaRcon(server) {
   }
 }
 
+async function refreshPlayerRoster(server, runtime, queryPort) {
+  if (!Number(runtime.players)) {
+    runtime.playerNames = [];
+    return;
+  }
+  const queried = await queryLocalA2sPlayers(queryPort);
+  if (Array.isArray(queried) && queried.length) {
+    runtime.playerNames = queried;
+    if (queried.length > Number(runtime.players)) runtime.players = queried.length;
+    return;
+  }
+  const fromLog = await playerNamesFromLogs(server);
+  runtime.playerNames = fromLog.length ? fromLog : [];
+}
+
 async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   const runtime = runtimeOf(server.id);
+  runtime.playerNames ||= [];
   if (runtime.updating) {
     runtime.status = "Updating";
     return;
@@ -1402,19 +1511,22 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       return;
     }
 
-    const info = await queryLocalA2s(parseQueryPort(server.launchArgs));
+    const queryPort = parseQueryPort(server.launchArgs);
+    const info = await queryLocalA2s(queryPort);
     if (info) {
       runtime.availability = "Online";
       runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
+      await refreshPlayerRoster(server, runtime, queryPort);
       return;
     }
 
-    // ASA often ignores A2S — fall back to RCON ListPlayers for live counts.
     const rconPlayers = await queryPlayerCountViaRcon(server);
     if (rconPlayers != null) {
       runtime.players = rconPlayers;
     }
+
+    await refreshPlayerRoster(server, runtime, queryPort);
 
     const ready = await detectReadyFromLogs(server.install);
     if (ready) {
@@ -1431,6 +1543,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.pid = null;
     runtime.availability = "Offline";
     runtime.players = 0;
+    runtime.playerNames = [];
     runtime.startedAt = 0;
   }
 }
@@ -1692,6 +1805,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
   runtime.startedAt = Date.now();
   runtime.availability = "Starting…";
   runtime.players = 0;
+  runtime.playerNames = [];
   runtime.maxPlayers = parseMaxPlayers(server);
   addActivity(`Started ${server.profile}`, "success");
   processCache.at = 0;
@@ -1729,6 +1843,7 @@ async function stopServer(server, { copyLog = true } = {}) {
   runtime.startedAt = 0;
   runtime.availability = "Offline";
   runtime.players = 0;
+  runtime.playerNames = [];
   addActivity(`Stopped ${server.profile}`, "info");
   processCache.at = 0;
   stopLogWatch(server.id);

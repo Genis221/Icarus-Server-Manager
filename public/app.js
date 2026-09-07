@@ -204,6 +204,14 @@ function appendConsoleLine(entry) {
   if (stick) el.scrollTop = el.scrollHeight;
 }
 
+function playerRosterLine(server) {
+  const names = Array.isArray(server.playerNames) ? server.playerNames.filter(Boolean) : [];
+  if (names.length) return names.join(" · ");
+  const count = Number(server.players) || 0;
+  if (count > 0) return `${count} connected`;
+  return "No players connected";
+}
+
 function rconHint(server) {
   const rcon = server.rcon || {};
   if (!rcon.hasPassword && !server.icarus?.adminPassword) return "Set Admin Password below, then use in-game /AdminLogin";
@@ -256,7 +264,7 @@ function renderServer(server) {
           <div>
             <p class="hero-kicker">Session</p>
             <h1>${escapeHtml(server.profile)}</h1>
-            <p class="muted">Ports and SteamCMD live on this machine. Switch to Live log after you start a prospect.</p>
+            <p class="session-players">${escapeHtml(playerRosterLine(server))}</p>
           </div>
           <div class="stats">
             <article class="stat-card ${statusUi.tone}">
@@ -393,10 +401,7 @@ function renderServer(server) {
             </label>
             <div class="field">
               <span class="field-label">Backup Folder</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
-                <button type="button" class="btn secondary" data-action="validate-backup">Browse</button>
-              </div>
+              <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
             </div>
             <div class="action-row">
               <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
@@ -410,17 +415,11 @@ function renderServer(server) {
             </div>
             <div class="field">
               <span class="field-label">Game Log Location</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
-                <button type="button" class="btn secondary" data-action="validate-logs">Browse</button>
-              </div>
+              <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
             </div>
             <div class="field">
               <span class="field-label">Update Log Location</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
-                <button type="button" class="btn secondary" data-action="validate-update-logs">Browse</button>
-              </div>
+              <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
             </div>
           </article>
         </div>
@@ -557,6 +556,8 @@ function updateLiveStats(server) {
     if (strong) strong.textContent = server.firewallStatus || "Not Checked";
     setStatTone(cards[3], firewallClass(server.firewallStatus));
   }
+  const roster = page.querySelector(".session-players");
+  if (roster) roster.textContent = playerRosterLine(server);
 
   const toggle = page.querySelector("[data-action='toggle']");
   if (toggle) {
@@ -1038,12 +1039,6 @@ workspace.addEventListener("click", async event => {
       if (idx >= 0) state.servers[idx] = { ...state.servers[idx], ...attached };
       toast(`Attached to ${attached.exe || attached.install}`, "success");
       await refreshState();
-    } else if (action === "validate-backup") {
-      await validatePath("autoBackupDest", "Backup");
-    } else if (action === "validate-logs") {
-      await validatePath("logLocation", "Game log");
-    } else if (action === "validate-update-logs") {
-      await validatePath("updateLogLocation", "Update log");
     } else if (action === "console-clear") {
       const el = document.getElementById("console-output");
       if (el) el.innerHTML = `<div class="console-empty">Live Icarus log output will appear here…</div>`;
