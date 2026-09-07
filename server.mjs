@@ -1012,6 +1012,7 @@ async function runImportJob(job) {
     }
     const preview = await inspectIcarusInstall(install, { measure: false });
     const attached = await attachToIcarusInstall(install);
+    await ensureModsFolder({ install: attached.install }).catch(() => {});
     const server = makeServer({
       profile: job.profile || preview.profile,
       install: attached.install,
@@ -2398,6 +2399,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
 
   server.launchArgs = applyIcarusLaunchArgs(server);
   await writeIcarusSettings(server);
+  await ensureModsFolder(server);
   if (server.icarus.prospectMode === "create" && createProspectLine(server.icarus)) {
     server.icarus.prospectMode = "resume";
   }
@@ -2782,6 +2784,87 @@ async function backupServer(server) {
   }
 }
 
+async function resolveContentPaksDir(server) {
+  const install = String(server.install || "").trim();
+  if (!install) return "";
+  const candidates = [
+    path.join(install, "Icarus", "Content", "Paks"),
+    path.join(install, "Content", "Paks")
+  ];
+  for (const dir of candidates) {
+    if (await pathExists(dir)) return dir;
+  }
+  return candidates[0];
+}
+
+async function ensureModsFolder(server) {
+  if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  const paks = await resolveContentPaksDir(server);
+  const mods = path.join(paks, "mods");
+  await mkdir(mods, { recursive: true });
+  return mods;
+}
+
+function safeModFileName(name) {
+  const base = path.basename(String(name || "").trim());
+  if (!/^[A-Za-z0-9][A-Za-z0-9._ \-]{0,120}\.(pak|utoc|ucas)$/i.test(base)) return "";
+  return base;
+}
+
+function modFilePath(server, name, folder) {
+  const safe = safeModFileName(name);
+  if (!safe || !folder) return "";
+  const dir = path.resolve(folder);
+  const full = path.resolve(dir, safe);
+  if (!isPathInside(dir, full)) return "";
+  return full;
+}
+
+async function listModFiles(server) {
+  const folder = await ensureModsFolder(server);
+  const files = [];
+  const entries = await readdir(folder, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const safe = safeModFileName(entry.name);
+    if (!safe) continue;
+    const st = await stat(path.join(folder, entry.name));
+    files.push({
+      name: entry.name,
+      exists: true,
+      bytes: st.size,
+      sizeLabel: formatBytes(st.size),
+      modified: st.mtime.toISOString()
+    });
+  }
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  return { folder, files };
+}
+
+async function addModFile(server, { name, source } = {}) {
+  const folder = await ensureModsFolder(server);
+  const from = String(source || "").trim();
+  if (!from) throw Object.assign(new Error("Paste the path to a .pak (or .utoc/.ucas) file to copy in"), { status: 400 });
+  if (!(await pathExists(from))) throw Object.assign(new Error("Source file was not found"), { status: 404 });
+  const st = await stat(from);
+  if (!st.isFile()) throw Object.assign(new Error("Source path must be a file"), { status: 400 });
+  const destName = safeModFileName(name) || safeModFileName(from);
+  const dest = modFilePath(server, destName, folder);
+  if (!dest) throw Object.assign(new Error("Use a .pak, .utoc, or .ucas filename"), { status: 400 });
+  if (st.size > 2 * 1024 * 1024 * 1024) throw Object.assign(new Error("Mod files are limited to 2 GB"), { status: 400 });
+  await copyFile(from, dest);
+  return dest;
+}
+
+async function deleteModFile(server, name) {
+  const folder = await ensureModsFolder(server);
+  const filePath = modFilePath(server, name, folder);
+  if (!filePath) throw Object.assign(new Error("Invalid mod filename"), { status: 400 });
+  if (!(await pathExists(filePath))) throw Object.assign(new Error("File is not on disk"), { status: 404 });
+  await rm(filePath, { force: true });
+  return filePath;
+}
+
 async function openInEditor(filePath) {
   await mkdir(path.dirname(filePath), { recursive: true });
   if (!(await pathExists(filePath))) await writeFile(filePath, "", "utf8");
@@ -2793,6 +2876,14 @@ async function openInEditor(filePath) {
     return;
   }
   spawn("xdg-open", [filePath], { detached: true, stdio: "ignore" }).unref();
+}
+
+async function openInExplorer(dir) {
+  if (process.platform === "win32") {
+    spawn("explorer.exe", [path.resolve(dir)], { detached: true, stdio: "ignore" }).unref();
+    return;
+  }
+  spawn("xdg-open", [dir], { detached: true, stdio: "ignore" }).unref();
 }
 
 async function copyConfigFiles(fromServer, toServer) {
@@ -3109,6 +3200,7 @@ async function handleApi(req, res, url) {
     const attached = await attachToIcarusInstall(target);
     server.install = attached.install;
     server.exe = attached.exe;
+    await ensureModsFolder(server).catch(() => {});
     scheduleSave();
     addActivity(`Attached ${server.profile} to ${attached.exe}`, "success");
     return sendJson(res, 200, publicServer(server));
@@ -3193,6 +3285,28 @@ async function handleApi(req, res, url) {
       scheduleSave();
     }
     return sendJson(res, 200, { ...publicServer(server), firewallStatus: status });
+  }
+  if (method === "GET" && action === "mods") {
+    if (!server.install) return sendJson(res, 400, { error: "Install location is not set" });
+    return sendJson(res, 200, await listModFiles(server));
+  }
+  if (method === "POST" && action === "mods") {
+    const body = (await readBody(req)) || {};
+    const filePath = await addModFile(server, body);
+    addActivity(`Added mod ${path.basename(filePath)} for ${server.profile}`, "success");
+    return sendJson(res, 200, { ok: true, path: filePath, ...(await listModFiles(server)) });
+  }
+  if (method === "POST" && action === "mods/delete") {
+    const body = (await readBody(req)) || {};
+    const filePath = await deleteModFile(server, body.name);
+    addActivity(`Removed mod ${path.basename(filePath)} for ${server.profile}`, "info");
+    return sendJson(res, 200, { ok: true, ...(await listModFiles(server)) });
+  }
+  if (method === "POST" && action === "mods/open-folder") {
+    await readBody(req).catch(() => null);
+    const folder = await ensureModsFolder(server);
+    await openInExplorer(folder);
+    return sendJson(res, 200, { ok: true, folder });
   }
   if (method === "GET" && action === "config-files") {
     if (!server.install) return sendJson(res, 400, { error: "Install location is not set" });

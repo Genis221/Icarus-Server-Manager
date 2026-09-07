@@ -417,6 +417,21 @@ function renderServer(server) {
             </div>
           </article>
           <article class="tile tile-wide">
+            <h2>Mods</h2>
+            <p class="field-hint">Icarus\\Content\\Paks\\mods on this install. The folder is created if it is missing. Copy .pak files in, or delete them here.</p>
+            <div class="config-file-list" id="mod-file-list"><p class="field-hint">Loading…</p></div>
+            <div class="config-add-row">
+              <label class="field">
+                <span>Copy from path</span>
+                <input id="mod-file-source" placeholder="C:\\Downloads\\MyMod.pak" />
+              </label>
+              <div class="action-row config-add-actions">
+                <button type="button" class="btn primary" data-action="mod-file-add">Add mod</button>
+                <button type="button" class="btn secondary" data-action="mod-open-folder">Open folder</button>
+              </div>
+            </div>
+          </article>
+          <article class="tile tile-wide">
             <h2>Config files</h2>
             <p class="field-hint">Files in Icarus\\Saved\\Config\\WindowsServer. Green means the file is on disk. Add a missing INI, copy one in from a path, or delete it here.</p>
             <div class="config-file-list" id="config-file-list"><p class="field-hint">Loading…</p></div>
@@ -482,6 +497,7 @@ function renderServer(server) {
 
   connectConsole(server.id);
   loadConfigFiles(server);
+  loadModFiles(server);
 }
 
 function configFileListHtml(files, folder) {
@@ -524,6 +540,37 @@ async function loadConfigFiles(server) {
   }
 }
 
+async function loadModFiles(server) {
+  const el = document.getElementById("mod-file-list");
+  if (!el || !server) return;
+  if (!server.install) {
+    el.innerHTML = `<p class="field-hint">Attach an install folder first.</p>`;
+    return;
+  }
+  try {
+    const data = await api(`/api/servers/${server.id}/mods`);
+    const files = data.files || [];
+    if (!files.length) {
+      el.innerHTML = `<p class="field-hint">mods folder is ready. No .pak files yet.<br>${escapeHtml(data.folder || "")}</p>`;
+      return;
+    }
+    el.innerHTML = files.map(file => `
+      <div class="config-file-row is-present">
+        <span class="config-file-status" title="On disk"></span>
+        <div class="config-file-meta">
+          <b>${escapeHtml(file.name)}</b>
+          <small>${escapeHtml(file.sizeLabel || "0 B")}</small>
+        </div>
+        <div class="config-file-actions">
+          <button type="button" class="btn danger" data-action="mod-file-delete" data-name="${escapeHtml(file.name)}">Delete</button>
+        </div>
+      </div>
+    `).join("") + `<p class="field-hint">${escapeHtml(data.folder || "")}</p>`;
+  } catch (err) {
+    el.innerHTML = `<p class="field-hint">${escapeHtml(err.message)}</p>`;
+  }
+}
+
 async function addConfigFileFromForm(server, name) {
   const preset = document.getElementById("config-file-preset");
   const custom = document.getElementById("config-file-name");
@@ -541,6 +588,8 @@ async function addConfigFileFromForm(server, name) {
   if (source) source.value = "";
   await loadConfigFiles(server);
 }
+
+function toTimeInput(value) {
   const text = String(value || "09:00");
   const match = text.match(/^(\d{1,2}):(\d{2})/);
   if (!match) return "09:00";
@@ -1142,6 +1191,27 @@ workspace.addEventListener("click", async event => {
       await api(`/api/servers/${server.id}/config-files/delete`, { method: "POST", body: { name } });
       toast(`Deleted ${name}`);
       await loadConfigFiles(server);
+    } else if (action === "mod-file-add") {
+      const source = String(document.getElementById("mod-file-source")?.value || "").trim();
+      if (!source) {
+        toast("Paste the path to a .pak file", "error");
+        return;
+      }
+      await api(`/api/servers/${server.id}/mods`, { method: "POST", body: { source } });
+      toast("Mod added", "success");
+      const input = document.getElementById("mod-file-source");
+      if (input) input.value = "";
+      await loadModFiles(server);
+    } else if (action === "mod-file-delete") {
+      const name = event.target.closest("[data-name]")?.dataset.name;
+      const ok = await confirmDanger("Remove mod", `Delete ${name} from Icarus\\Content\\Paks\\mods?`);
+      if (!ok) return;
+      await api(`/api/servers/${server.id}/mods/delete`, { method: "POST", body: { name } });
+      toast(`Removed ${name}`);
+      await loadModFiles(server);
+    } else if (action === "mod-open-folder") {
+      await api(`/api/servers/${server.id}/mods/open-folder`, { method: "POST", body: {} });
+      toast("Opened mods folder");
     } else if (action === "attach-install") {
       const target = String(server.install || "").trim();
       if (!target) {
