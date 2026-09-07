@@ -225,6 +225,7 @@ function runtimeOf(id) {
       availability: "Offline",
       players: 0,
       playerNames: [],
+      playersOnline: [],
       maxPlayers: 8,
       pid: null,
       startedAt: 0,
@@ -544,6 +545,7 @@ function publicServer(server, rcon = null) {
     availability: runtime.availability,
     players: runtime.players,
     playerNames: Array.isArray(runtime.playerNames) ? runtime.playerNames : [],
+    playersOnline: Array.isArray(runtime.playersOnline) ? runtime.playersOnline : [],
     maxPlayers: runtime.maxPlayers || parseMaxPlayers(server),
     pid: runtime.pid,
     backupInProgress: Boolean(runtime.backupInProgress),
@@ -1300,9 +1302,12 @@ function queryA2sPlayers(host, port, timeoutMs = 800) {
           offset += 1;
           let name;
           [name, offset] = readCString(msg, offset);
-          offset += 8;
+          const score = offset + 4 <= msg.length ? msg.readInt32LE(offset) : 0;
+          offset += 4;
+          const duration = offset + 4 <= msg.length ? msg.readFloatLE(offset) : 0;
+          offset += 4;
           const cleaned = String(name || "").trim();
-          if (cleaned) names.push(cleaned);
+          if (cleaned) names.push({ name: cleaned, score, duration, ping: null });
         }
         finish(names);
       } catch {
@@ -1330,32 +1335,50 @@ async function queryLocalA2sPlayers(port) {
   return null;
 }
 
-function playerNamesFromLogText(text) {
-  const names = new Set();
+function playersFromLogText(text) {
+  const byName = new Map();
   const lines = String(text || "").split(/\r?\n/);
   const join = /(?:logged in|has joined|joined the (?:server|game|session)|connected to server).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
   const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?([^"\r\n]{2,32})"?/i;
   const leave = /(?:logged out|has left|disconnected|Removing P2P).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
+  const pingRe = /(?:AverageInPing|InPing|OutPing|\bPing|\bRTT)\s*[=:]\s*(\d{1,4})/i;
+  let lastName = "";
+  const upsert = (name, ping) => {
+    const key = name.toLowerCase();
+    const prev = byName.get(key) || { name, ping: null };
+    if (Number.isFinite(ping)) prev.ping = ping;
+    prev.name = name;
+    byName.set(key, prev);
+  };
   for (const line of lines) {
+    const pingMatch = line.match(pingRe);
+    const ping = pingMatch ? Number(pingMatch[1]) : null;
     let match = line.match(leave);
     if (match) {
       const name = (match[1] || match[2] || "").trim();
-      if (name) names.delete(name);
+      if (name) byName.delete(name.toLowerCase());
       continue;
     }
     match = line.match(join) || line.match(named);
     if (match) {
       const name = (match[1] || match[2] || "").trim();
-      if (name && !/^(unknown|null|none|player)$/i.test(name)) names.add(name);
+      if (name && !/^(unknown|null|none|player)$/i.test(name)) {
+        lastName = name;
+        upsert(name, ping);
+        continue;
+      }
+    }
+    if (ping != null && lastName && byName.has(lastName.toLowerCase())) {
+      upsert(lastName, ping);
     }
   }
-  return [...names];
+  return [...byName.values()];
 }
 
-async function playerNamesFromLogs(server) {
+async function playersFromLogs(server) {
   try {
     const text = await readLogTail(shooterLogPath(server), 512 * 1024);
-    return playerNamesFromLogText(text);
+    return playersFromLogText(text);
   } catch {
     return [];
   }
@@ -1472,24 +1495,44 @@ async function queryPlayerCountViaRcon(server) {
   }
 }
 
+function applyRoster(runtime, list) {
+  const players = (Array.isArray(list) ? list : [])
+    .map(entry => {
+      if (!entry) return null;
+      if (typeof entry === "string") return { name: entry, ping: null };
+      const name = String(entry.name || "").trim();
+      if (!name) return null;
+      const ping = Number(entry.ping);
+      return { name, ping: Number.isFinite(ping) ? ping : null };
+    })
+    .filter(Boolean);
+  runtime.playersOnline = players;
+  runtime.playerNames = players.map(player => player.name);
+  if (players.length > Number(runtime.players)) runtime.players = players.length;
+}
+
 async function refreshPlayerRoster(server, runtime, queryPort) {
   if (!Number(runtime.players)) {
-    runtime.playerNames = [];
+    applyRoster(runtime, []);
     return;
   }
+  const fromLog = await playersFromLogs(server);
+  const pingByName = new Map(fromLog.map(player => [player.name.toLowerCase(), player.ping]));
   const queried = await queryLocalA2sPlayers(queryPort);
   if (Array.isArray(queried) && queried.length) {
-    runtime.playerNames = queried;
-    if (queried.length > Number(runtime.players)) runtime.players = queried.length;
+    applyRoster(runtime, queried.map(player => ({
+      name: player.name,
+      ping: pingByName.get(String(player.name || "").toLowerCase()) ?? player.ping ?? null
+    })));
     return;
   }
-  const fromLog = await playerNamesFromLogs(server);
-  runtime.playerNames = fromLog.length ? fromLog : [];
+  applyRoster(runtime, fromLog);
 }
 
 async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   const runtime = runtimeOf(server.id);
   runtime.playerNames ||= [];
+  runtime.playersOnline ||= [];
   if (runtime.updating) {
     runtime.status = "Updating";
     return;
@@ -1544,6 +1587,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     runtime.availability = "Offline";
     runtime.players = 0;
     runtime.playerNames = [];
+    runtime.playersOnline = [];
     runtime.startedAt = 0;
   }
 }
@@ -1806,6 +1850,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
   runtime.availability = "Starting…";
   runtime.players = 0;
   runtime.playerNames = [];
+  runtime.playersOnline = [];
   runtime.maxPlayers = parseMaxPlayers(server);
   addActivity(`Started ${server.profile}`, "success");
   processCache.at = 0;
@@ -1844,6 +1889,7 @@ async function stopServer(server, { copyLog = true } = {}) {
   runtime.availability = "Offline";
   runtime.players = 0;
   runtime.playerNames = [];
+  runtime.playersOnline = [];
   addActivity(`Stopped ${server.profile}`, "info");
   processCache.at = 0;
   stopLogWatch(server.id);

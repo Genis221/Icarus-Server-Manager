@@ -204,12 +204,20 @@ function appendConsoleLine(entry) {
   if (stick) el.scrollTop = el.scrollHeight;
 }
 
-function playerRosterLine(server) {
-  const names = Array.isArray(server.playerNames) ? server.playerNames.filter(Boolean) : [];
-  if (names.length) return names.join(" · ");
-  const count = Number(server.players) || 0;
-  if (count > 0) return `${count} connected`;
-  return "No players connected";
+function playerRosterHtml(server) {
+  const list = Array.isArray(server.playersOnline) && server.playersOnline.length
+    ? server.playersOnline
+    : (Array.isArray(server.playerNames) ? server.playerNames.map(name => ({ name, ping: null })) : []);
+  if (!list.length) {
+    const count = Number(server.players) || 0;
+    return count > 0 ? escapeHtml(`${count} connected`) : "No players connected";
+  }
+  return list.map(player => {
+    const name = typeof player === "string" ? player : player.name;
+    const ping = typeof player === "object" ? Number(player.ping) : NaN;
+    const pingLabel = Number.isFinite(ping) ? `${Math.round(ping)}ms` : "—";
+    return `<span class="player-chip"><b>${escapeHtml(name || "Player")}</b><small>${escapeHtml(pingLabel)}</small></span>`;
+  }).join("");
 }
 
 function rconHint(server) {
@@ -264,7 +272,6 @@ function renderServer(server) {
           <div>
             <p class="hero-kicker">Session</p>
             <h1>${escapeHtml(server.profile)}</h1>
-            <p class="session-players">${escapeHtml(playerRosterLine(server))}</p>
           </div>
           <div class="stats">
             <article class="stat-card ${statusUi.tone}">
@@ -275,9 +282,10 @@ function renderServer(server) {
               <span>Availability</span>
               <strong>${escapeHtml(server.availability || "Offline")}</strong>
             </article>
-            <article class="stat-card ${Number(server.players) > 0 ? "good" : ""}">
+            <article class="stat-card players-card ${Number(server.players) > 0 ? "good" : ""}">
               <span>Players</span>
               <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 8}</strong>
+              <div class="player-roster">${playerRosterHtml(server)}</div>
             </article>
             <article class="stat-card ${firewallClass(server.firewallStatus)}">
               <span>Firewall</span>
@@ -550,14 +558,14 @@ function updateLiveStats(server) {
     const strong = cards[2].querySelector("strong");
     if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 8}`;
     setStatTone(cards[2], playerCount > 0 ? "good" : "");
+    const roster = cards[2].querySelector(".player-roster");
+    if (roster) roster.innerHTML = playerRosterHtml(server);
   }
   if (cards[3]) {
     const strong = cards[3].querySelector("strong");
     if (strong) strong.textContent = server.firewallStatus || "Not Checked";
     setStatTone(cards[3], firewallClass(server.firewallStatus));
   }
-  const roster = page.querySelector(".session-players");
-  if (roster) roster.textContent = playerRosterLine(server);
 
   const toggle = page.querySelector("[data-action='toggle']");
   if (toggle) {

@@ -412,7 +412,7 @@ button { cursor: pointer; }
   display: grid;
   gap: 8px;
 }
-.stat-card span {
+.stat-card > span {
   font-size: 10px;
   letter-spacing: .14em;
   text-transform: uppercase;
@@ -432,6 +432,32 @@ button { cursor: pointer; }
   height: 8px;
   border-radius: 50%;
   background: var(--muted);
+}
+.stat-card.players-card {
+  align-content: start;
+}
+.player-roster {
+  display: grid;
+  gap: 4px;
+  min-height: 1.2em;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.player-chip {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+}
+.player-chip b { font-weight: 650; }
+.player-chip small {
+  color: var(--accent-2);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 .stat-card.good strong { color: var(--green); }
 .stat-card.good strong::before { background: var(--green); }
@@ -693,7 +719,7 @@ button { cursor: pointer; }
 .btn.start, .btn.stop { min-width: 76px; }
 .stats { gap: 6px; }
 .stat-card { border-radius: 10px; padding: 6px 8px; gap: 3px; }
-.stat-card span { font-size: 9px; }
+.stat-card > span { font-size: 9px; }
 .stat-card strong { font-size: 12px; gap: 5px; }
 .day-row { gap: 4px; }
 .day-row label { gap: 4px; padding: 3px 7px; font-size: 11px; }
