@@ -378,6 +378,7 @@ function applyIcarusLaunchArgs(server) {
   let args = applySteamServerName(server.launchArgs, server.profile);
   args = applyLaunchFlag(args, "-Port", icarus.gamePort);
   args = applyLaunchFlag(args, "-QueryPort", icarus.queryPort);
+  args = String(args || "").replace(/(?:^|\s)-MULTIHOME=(?:127\.0\.0\.1|localhost|\[?::1\]?)(?=\s|$)/ig, " ").replace(/\s+/g, " ").trim();
   if (!/(?:^|\s)-Log(?:\s|$)/i.test(args)) args = `${args} -Log`.trim();
   server.launchArgs = args;
   return args;
@@ -502,9 +503,19 @@ function sendJson(res, status, body) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(data),
-    "Cache-Control": "no-store"
+    "Cache-Control": "no-store",
+    ...corsHeaders()
   });
   res.end(data);
+}
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Last-Event-ID",
+    "Access-Control-Max-Age": "86400"
+  };
 }
 
 async function readBody(req, limit = MAX_BODY) {
@@ -1171,7 +1182,8 @@ function openConsoleStream(req, res, server) {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
-    "X-Accel-Buffering": "no"
+    "X-Accel-Buffering": "no",
+    ...corsHeaders()
   });
   res.write("retry: 1500\n\n");
   for (const entry of runtime.consoleLogs) {
@@ -1522,13 +1534,27 @@ function mergePlayerLists(...lists) {
       if (!name) continue;
       const key = name.toLowerCase();
       const prev = byName.get(key) || { name, ping: null };
-      const ping = Number(entry?.ping);
-      if (Number.isFinite(ping)) prev.ping = ping;
+      const ping = sanitizePing(entry?.ping);
+      if (ping != null) prev.ping = ping;
       prev.name = name;
       byName.set(key, prev);
     }
   }
   return [...byName.values()];
+}
+
+function sanitizePing(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ms = n > 0 && n < 1 ? n * 1000 : n;
+  if (!Number.isFinite(ms) || ms <= 0 || ms > 2500) return null;
+  return Math.round(ms);
+}
+
+function parsePingFromLine(line) {
+  const match = String(line || "").match(/(?:AverageInPing|InPing|OutPing|PingMS)\s*[=:]\s*(\d+(?:\.\d+)?)/i);
+  if (!match) return null;
+  return sanitizePing(match[1]);
 }
 
 function playersFromLogText(text, excludeNames = []) {
@@ -1542,24 +1568,26 @@ function playersFromLogText(text, excludeNames = []) {
   const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?(\p{L}[^"\r\n]{1,31}?)"?(?:\s|$|,)/iu;
   const displayName = /DisplayName:\s*(\p{L}[\p{L}0-9 _.\-]{1,31})/iu;
   const leave = /(?:logged out|has left|was kicked|was banned)\b.*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
-  const pingRe = /(?:AverageInPing|InPing|OutPing|\bPing|\bRTT)\s*[=:]\s*(\d{1,4})/i;
   const addSteam = /(?:Adding user|Adding P2P|RegisterConnection).*?\b(\d{17})\b/i;
   const dropSteam = /(?:Removing P2P|PendingConnectionLost|Closing.*connection|Connection closed).*?(\d{17})/i;
+  const pingBySteam = new Map();
   let lastName = "";
   const upsert = (name, ping) => {
     if (isJunkPlayerName(name, exclude)) return;
     const key = name.toLowerCase();
     const prev = byName.get(key) || { name, ping: null };
-    if (Number.isFinite(ping)) prev.ping = ping;
+    const nextPing = sanitizePing(ping);
+    if (nextPing != null) prev.ping = nextPing;
     prev.name = name;
     byName.set(key, prev);
     lastName = name;
   };
   for (const line of lines) {
-    const pingMatch = line.match(pingRe);
-    const ping = pingMatch ? Number(pingMatch[1]) : null;
+    const ping = parsePingFromLine(line);
     const added = line.match(addSteam);
     if (added) steamOnline.add(added[1]);
+    const steamIdOnLine = line.match(/\b(\d{17})\b/);
+    if (ping != null && steamIdOnLine) pingBySteam.set(steamIdOnLine[1], ping);
     const dropped = line.match(dropSteam);
     if (dropped) {
       steamOnline.delete(dropped[1]);
@@ -1588,7 +1616,7 @@ function playersFromLogText(text, excludeNames = []) {
       upsert(lastName, ping);
     }
   }
-  return { players: [...byName.values()], steamIds: [...steamOnline] };
+  return { players: [...byName.values()], steamIds: [...steamOnline], pingBySteam };
 }
 
 async function playersFromLogs(server) {
@@ -1598,7 +1626,7 @@ async function playersFromLogs(server) {
     const text = await readLogTail(shooterLogPath(server), 8 * 1024 * 1024);
     return playersFromLogText(text, exclude);
   } catch {
-    return { players: [], steamIds: [] };
+    return { players: [], steamIds: [], pingBySteam: new Map() };
   }
 }
 
@@ -1736,8 +1764,7 @@ function applyRoster(runtime, list) {
       if (typeof entry === "string") return { name: entry, ping: null };
       const name = String(entry.name || "").trim();
       if (!name) return null;
-      const ping = Number(entry.ping);
-      return { name, ping: Number.isFinite(ping) ? ping : null };
+      return { name, ping: sanitizePing(entry.ping) };
     })
     .filter(Boolean);
   runtime.playersOnline = players;
@@ -1753,23 +1780,26 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
   ]);
   const logPlayers = fromLog?.players || [];
   const steamIds = Array.isArray(fromLog?.steamIds) ? fromLog.steamIds : [];
+  const pingBySteam = fromLog?.pingBySteam instanceof Map ? fromLog.pingBySteam : new Map();
   const bySteam = new Map((members || []).map(member => [member.steamId, member]));
   const playing = (members || [])
     .filter(member => member.playing && member.name)
-    .map(member => ({ name: member.name, ping: null }));
+    .map(member => ({ name: member.name, ping: pingBySteam.get(member.steamId) ?? null }));
   const fromSteamIds = [];
   const unresolved = [];
   const ids = steamIds.length ? steamIds : playing.length ? [] : [...bySteam.keys()].filter(id => bySteam.get(id)?.playing);
   for (const id of ids) {
     const member = bySteam.get(id);
-    if (member?.name) fromSteamIds.push({ name: member.name, ping: null });
+    const ping = pingBySteam.get(id) ?? null;
+    if (member?.name) fromSteamIds.push({ name: member.name, ping });
     else unresolved.push(id);
   }
   if (unresolved.length) {
     const personas = await Promise.all(unresolved.map(id => steamPersonaName(id)));
     personas.forEach((name, index) => {
-      if (name) fromSteamIds.push({ name, ping: null });
-      else fromSteamIds.push({ name: `Player ${String(unresolved[index]).slice(-4)}`, ping: null });
+      const ping = pingBySteam.get(unresolved[index]) ?? null;
+      if (name) fromSteamIds.push({ name, ping });
+      else fromSteamIds.push({ name: `Player ${String(unresolved[index]).slice(-4)}`, ping });
     });
   }
   let merged = mergePlayerLists(playing, queried, logPlayers, fromSteamIds);
@@ -2621,12 +2651,12 @@ async function serveStatic(req, res, urlPath) {
   try {
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream" });
+    res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream", ...corsHeaders() });
     res.end(data);
   } catch {
     if (rel !== "/index.html") {
       const index = await readFile(path.join(PUBLIC_DIR, "index.html"));
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...corsHeaders() });
       return res.end(index);
     }
     res.writeHead(404);
@@ -2926,6 +2956,10 @@ async function handleApi(req, res, url) {
 
 async function handler(req, res) {
   try {
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, corsHeaders());
+      return res.end();
+    }
     const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
     if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return await serveStatic(req, res, url.pathname);
@@ -2969,7 +3003,7 @@ async function main() {
     console.log(`  Port:   ${PORT}`);
     console.log(`  Local:  ${localUrl}`);
     for (const ip of lans) console.log(`  Network: http://${ip}:${PORT}`);
-    if (!lans.length) console.log(`  Network: http://<this-pc-ip>:${PORT}`);
+    console.log(`  WAN:     forward TCP ${PORT} here for this panel; Icarus needs UDP game + query ports`);
     ensureManagerFirewallPort(PORT).catch(err => {
       console.warn(`[firewall] Could not ensure manager port ${PORT}: ${err.message}`);
     });

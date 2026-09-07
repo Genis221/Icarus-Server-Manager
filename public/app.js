@@ -215,7 +215,7 @@ function playerRosterHtml(server) {
   return list.map(player => {
     const name = typeof player === "string" ? player : player.name;
     const ping = typeof player === "object" ? Number(player.ping) : NaN;
-    const pingLabel = Number.isFinite(ping) ? `${Math.round(ping)}ms` : "—";
+    const pingLabel = Number.isFinite(ping) && ping > 0 ? `${Math.round(ping)}ms` : "—";
     return `<span class="player-chip"><b>${escapeHtml(name || "Player")}</b><small>${escapeHtml(pingLabel)}</small></span>`;
   }).join("");
 }
@@ -378,7 +378,7 @@ function renderServer(server) {
           </article>
           <article class="tile">
             <h2>Ports</h2>
-            <p class="field-hint">UDP. Applied as -Port and -QueryPort on start (not INI).</p>
+            <p class="field-hint">Game and Steam query (UDP). Bound on all interfaces. Forward both from your router for players outside the LAN; TCP copies are also opened in Windows Firewall.</p>
             <label class="field"><span>Game port</span><input data-icarus="gamePort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.gamePort ?? 17777)}" /></label>
             <label class="field"><span>Query port</span><input data-icarus="queryPort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.queryPort ?? 27015)}" /></label>
           </article>
@@ -939,8 +939,8 @@ document.getElementById("btn-info").addEventListener("click", () => {
   const p = infoDialog.querySelector(".muted");
   if (p) {
     p.textContent = lans.length
-      ? `Any IP can connect. Examples: ${lans.join(" · ")}`
-      : "Listening on all interfaces (0.0.0.0). Use this PC's IP and port 3230 from other devices.";
+      ? `This PC and the internet can use the panel (forward TCP ${window.__icarusHost.managerPort || 3230}). LAN examples: ${lans.join(" · ")}`
+      : "Listening on all interfaces (0.0.0.0). Forward TCP 3230 for the panel, and UDP game + query ports for Icarus.";
   }
   infoDialog.showModal();
 });

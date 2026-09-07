@@ -321,6 +321,7 @@ if ($lanIp) {
 } else {
   Write-Host "  Network: http://<this-pc-ip>:$Port"
 }
+Write-Host "  WAN:     forward TCP $Port to this PC for the panel (Icarus also needs UDP game + query ports)"
 
 Set-Location $projectRoot
 $nodeArgs = @("server.mjs")
