@@ -569,9 +569,9 @@ button { cursor: pointer; }
   border: 1px solid rgba(45, 212, 191, 0.14);
   border-radius: 22px;
   overflow: hidden;
-  height: min(520px, calc(100vh - 148px));
-  max-height: min(520px, calc(100vh - 148px));
-  min-height: 280px;
+  height: min(1040px, calc(100vh - 148px));
+  max-height: min(1040px, calc(100vh - 148px));
+  min-height: 560px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
@@ -810,7 +810,7 @@ button { cursor: pointer; }
 .stat-card strong { font-size: 12px; gap: 5px; }
 .day-row { gap: 4px; }
 .day-row label { gap: 4px; padding: 3px 7px; font-size: 11px; }
-.console-panel { border-radius: 12px; height: min(480px, calc(100vh - 120px)); max-height: min(480px, calc(100vh - 120px)); min-height: 240px; }
+.console-panel { border-radius: 12px; height: min(960px, calc(100vh - 120px)); max-height: min(960px, calc(100vh - 120px)); min-height: 480px; }
 .console-toolbar { gap: 8px; padding: 7px 10px; }
 .console-command { padding: 8px; }
 .console-command input[type="text"] { height: 30px; border-radius: 8px; }
