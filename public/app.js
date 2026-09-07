@@ -26,7 +26,7 @@ const state = {
       const raw = JSON.parse(localStorage.getItem("icarus-open-sections") || "null");
       if (Array.isArray(raw) && raw.length) return new Set(raw);
     } catch { /* ignore */ }
-    return new Set(["install", "session"]);
+    return new Set();
   })(),
   busy: new Set(),
   repairPrompted: new Set(),
@@ -241,9 +241,16 @@ function prospectTypeOptions(selected) {
   ).join("");
 }
 
-function collapsibleTile(id, title, body, wide = false) {
+function staticTile(title, body) {
+  return `<article class="tile">
+    <h2>${title}</h2>
+    ${body}
+  </article>`;
+}
+
+function collapsibleTile(id, title, body) {
   const open = state.openSections.has(id);
-  return `<article class="tile collapsible ${wide ? "tile-wide" : ""} ${open ? "is-open" : ""}" data-section="${id}">
+  return `<article class="tile collapsible ${open ? "is-open" : ""}" data-section="${id}">
     <button type="button" class="tile-toggle" data-action="toggle-section" data-section="${id}" aria-expanded="${open ? "true" : "false"}">
       <h2>${title}</h2>
       <span class="tile-chevron" aria-hidden="true"></span>
@@ -309,168 +316,172 @@ function renderServer(server) {
             </article>
           </div>
         </div>
-        <div class="overview-grid">
-          ${collapsibleTile("install", "Install", `
-            <label class="field">
-              <span>Installed Version</span>
-              <input data-field="version" value="${escapeHtml(server.version || "")}" readonly />
-            </label>
-            <div class="field">
-              <span class="field-label">Install Location</span>
-              <div class="path-row">
-                <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\IcarusDedicatedServer or ...\\IcarusServer.exe" />
-                <button type="button" class="btn secondary" data-action="attach-install">Attach</button>
-              </div>
-            </div>
-            ${server.exe ? `<p class="field-hint">Running: ${escapeHtml(server.exe)}</p>` : `<p class="field-hint">Point this at the folder that contains IcarusServer.exe, then Attach.</p>`}
-          `)}
-          ${collapsibleTile("steamcmd", "SteamCMD", `
-            <div class="field">
-              <span class="field-label">SteamCMD folder</span>
-              <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
-            </div>
-            <div class="action-row">
-              <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
-            </div>
-          `)}
-          ${collapsibleTile("launch", "Launch", `
-            <label class="field">
-              <span>Launch Arguments</span>
-              <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder='-SteamServerName="My Icarus Server" -Port=17777 -QueryPort=27015 -Log' />
-            </label>
-          `)}
-          ${collapsibleTile("session", "Session", `
-            <p class="field-hint">Written to ServerSettings.ini. SessionName is ignored by the game — the prospect name above becomes -SteamServerName.</p>
-            <label class="field"><span>Join password</span><input data-icarus="joinPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.joinPassword || "")}" placeholder="Leave empty for public" /></label>
-            <label class="field"><span>Admin password</span><input data-icarus="adminPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.adminPassword || "")}" placeholder="Required for /AdminLogin" /></label>
-            <label class="field"><span>Max players</span><input data-icarus="maxPlayers" type="number" min="1" max="20" value="${escapeHtml(icarus.maxPlayers ?? 8)}" /></label>
-            <label class="check-line"><input type="checkbox" data-icarus="stayOnline" ${icarus.stayOnline !== false ? "checked" : ""} /> Stay online when empty (ShutdownIf* = -1)</label>
-          `)}
-          ${collapsibleTile("prospect", "Prospect on start", `
-            <p class="field-hint">Boot order is Load, then Resume, then Create. Empty lobby if none apply.</p>
-            <label class="field">
-              <span>Startup mode</span>
-              <select data-icarus="prospectMode">
-                <option value="resume" ${icarus.prospectMode === "resume" ? "selected" : ""}>Resume last prospect</option>
-                <option value="load" ${icarus.prospectMode === "load" ? "selected" : ""}>Load a saved prospect</option>
-                <option value="create" ${icarus.prospectMode === "create" ? "selected" : ""}>Create a new prospect</option>
-                <option value="lobby" ${icarus.prospectMode === "lobby" ? "selected" : ""}>Lobby only</option>
-              </select>
-            </label>
-            <label class="field"><span>Last prospect</span><input value="${escapeHtml(icarus.lastProspectName || "")}" readonly placeholder="Filled by the server after a run" /></label>
-            <label class="field icarus-load"><span>Load prospect name</span><input data-icarus="loadProspect" value="${escapeHtml(icarus.loadProspect || "")}" placeholder="Exact save name" /></label>
-            <div class="icarus-create">
+        <div class="overview-stack">
+          <div class="overview-pin">
+            ${staticTile("Install", `
               <label class="field">
-                <span>Create type</span>
-                <select data-icarus="createType">${prospectTypeOptions(icarus.createType)}</select>
+                <span>Installed Version</span>
+                <input data-field="version" value="${escapeHtml(server.version || "")}" readonly />
               </label>
+              <div class="field">
+                <span class="field-label">Install Location</span>
+                <div class="path-row">
+                  <input class="inline-input" data-field="install" value="${escapeHtml(server.install || "")}" placeholder="C:\\IcarusDedicatedServer or ...\\IcarusServer.exe" />
+                  <button type="button" class="btn secondary" data-action="attach-install">Attach</button>
+                </div>
+              </div>
+              ${server.exe ? `<p class="field-hint">Running: ${escapeHtml(server.exe)}</p>` : `<p class="field-hint">Point this at the folder that contains IcarusServer.exe, then Attach.</p>`}
+            `)}
+            ${staticTile("SteamCMD", `
+              <div class="field">
+                <span class="field-label">SteamCMD folder</span>
+                <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
+              </div>
+              <div class="action-row">
+                <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
+              </div>
+            `)}
+            ${staticTile("Launch", `
               <label class="field">
-                <span>Difficulty</span>
-                <select data-icarus="createDifficulty">
-                  <option value="1" ${String(icarus.createDifficulty) === "1" ? "selected" : ""}>1 Easy</option>
-                  <option value="2" ${String(icarus.createDifficulty) === "2" ? "selected" : ""}>2 Medium</option>
-                  <option value="3" ${String(icarus.createDifficulty) === "3" ? "selected" : ""}>3 Hard</option>
-                  <option value="4" ${String(icarus.createDifficulty) === "4" ? "selected" : ""}>4 Extreme</option>
+                <span>Launch Arguments</span>
+                <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder='-SteamServerName="My Icarus Server" -Port=17777 -QueryPort=27015 -Log' />
+              </label>
+            `)}
+            ${staticTile("Prospect on start", `
+              <p class="field-hint">Boot order is Load, then Resume, then Create. Empty lobby if none apply.</p>
+              <label class="field">
+                <span>Startup mode</span>
+                <select data-icarus="prospectMode">
+                  <option value="resume" ${icarus.prospectMode === "resume" ? "selected" : ""}>Resume last prospect</option>
+                  <option value="load" ${icarus.prospectMode === "load" ? "selected" : ""}>Load a saved prospect</option>
+                  <option value="create" ${icarus.prospectMode === "create" ? "selected" : ""}>Create a new prospect</option>
+                  <option value="lobby" ${icarus.prospectMode === "lobby" ? "selected" : ""}>Lobby only</option>
                 </select>
               </label>
-              <label class="field"><span>Save name</span><input data-icarus="createSave" value="${escapeHtml(icarus.createSave || "")}" placeholder="Required, e.g. MyBase" /></label>
-              <label class="check-line"><input type="checkbox" data-icarus="createHardcore" ${icarus.createHardcore ? "checked" : ""} /> Hardcore (no respawn)</label>
-            </div>
-          `)}
-          ${collapsibleTile("lobby", "Lobby permissions", `
-            <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsLaunch" ${icarus.allowNonAdminsLaunch !== false ? "checked" : ""} /> Non-admins can launch prospects</label>
-            <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsDelete" ${icarus.allowNonAdminsDelete ? "checked" : ""} /> Non-admins can delete prospect saves</label>
-          `)}
-          ${collapsibleTile("ports", "Ports", `
-            <p class="field-hint">Game and Steam query (UDP). Bound on all interfaces. Forward both from your router for players outside the LAN; TCP copies are also opened in Windows Firewall.</p>
-            <label class="field"><span>Game port</span><input data-icarus="gamePort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.gamePort ?? 17777)}" /></label>
-            <label class="field"><span>Query port</span><input data-icarus="queryPort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.queryPort ?? 27015)}" /></label>
-          `)}
-          ${collapsibleTile("autostart", "Automatic start", `
-            <div class="day-row">${dayChecks("autostartDays", server.autostartDays)}</div>
-            <label class="field"><span>Start Server at</span><input type="time" data-field="autostartTime" value="${escapeHtml(toTimeInput(server.autostartTime))}" /></label>
-            <label class="check-line"><input type="checkbox" data-field="autostartUpdate" ${server.autostartUpdate ? "checked" : ""} /> Update before start</label>
-          `)}
-          ${collapsibleTile("shutdown", "Shutdown / restart", `
-            <div class="day-row">${dayChecks("shutdownDays", server.shutdownDays)}</div>
-            <label class="field"><span>Shutdown at</span><input type="time" data-field="shutdownTime" value="${escapeHtml(toTimeInput(server.shutdownTime))}" /></label>
-            <label class="check-line"><input type="checkbox" data-field="performUpdate" ${server.performUpdate ? "checked" : ""} /> Perform update</label>
-            <label class="check-line"><input type="checkbox" data-field="thenRestart" ${server.thenRestart ? "checked" : ""} /> Then restart</label>
-          `)}
-          ${collapsibleTile("backups", "Prospect backups", `
-            <label class="field">
-              <span>Interval</span>
-              <select data-field="autoBackupInterval">
-                ${INTERVALS.map(v => `<option value="${v}" ${server.autoBackupInterval === v ? "selected" : ""}>${v}</option>`).join("")}
-              </select>
-            </label>
-            <label class="field">
-              <span>Keep last N backups</span>
-              <input type="number" min="10" max="100" data-field="backupLimit" value="${escapeHtml(server.backupLimit || "10")}" />
-            </label>
-            <div class="field">
-              <span class="field-label">Backup Folder</span>
-              <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
-            </div>
-            <div class="action-row">
-              <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
-              <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
-            </div>
-          `)}
-          ${collapsibleTile("mods", "Mods", `
-            <p class="field-hint">Icarus\\Content\\Paks\\mods on this install. The folder is created if it is missing. Copy .pak files in, or delete them here.</p>
-            <div class="config-file-list" id="mod-file-list"><p class="field-hint">Loading…</p></div>
-            <div class="config-add-row">
-              <label class="field">
-                <span>Copy from path</span>
-                <input id="mod-file-source" placeholder="C:\\Downloads\\MyMod.pak" />
-              </label>
-              <div class="action-row config-add-actions">
-                <button type="button" class="btn primary" data-action="mod-file-add">Add mod</button>
-                <button type="button" class="btn secondary" data-action="mod-open-folder">Open folder</button>
+              <label class="field"><span>Last prospect</span><input value="${escapeHtml(icarus.lastProspectName || "")}" readonly placeholder="Filled by the server after a run" /></label>
+              <label class="field icarus-load"><span>Load prospect name</span><input data-icarus="loadProspect" value="${escapeHtml(icarus.loadProspect || "")}" placeholder="Exact save name" /></label>
+              <div class="icarus-create">
+                <label class="field">
+                  <span>Create type</span>
+                  <select data-icarus="createType">${prospectTypeOptions(icarus.createType)}</select>
+                </label>
+                <label class="field">
+                  <span>Difficulty</span>
+                  <select data-icarus="createDifficulty">
+                    <option value="1" ${String(icarus.createDifficulty) === "1" ? "selected" : ""}>1 Easy</option>
+                    <option value="2" ${String(icarus.createDifficulty) === "2" ? "selected" : ""}>2 Medium</option>
+                    <option value="3" ${String(icarus.createDifficulty) === "3" ? "selected" : ""}>3 Hard</option>
+                    <option value="4" ${String(icarus.createDifficulty) === "4" ? "selected" : ""}>4 Extreme</option>
+                  </select>
+                </label>
+                <label class="field"><span>Save name</span><input data-icarus="createSave" value="${escapeHtml(icarus.createSave || "")}" placeholder="Required, e.g. MyBase" /></label>
+                <label class="check-line"><input type="checkbox" data-icarus="createHardcore" ${icarus.createHardcore ? "checked" : ""} /> Hardcore (no respawn)</label>
               </div>
-            </div>
-          `, true)}
-          ${collapsibleTile("config-files", "Config files", `
-            <p class="field-hint">Files in Icarus\\Saved\\Config\\WindowsServer. Green means the file is on disk. Add a missing INI, copy one in from a path, or delete it here.</p>
-            <div class="config-file-list" id="config-file-list"><p class="field-hint">Loading…</p></div>
-            <div class="config-add-row">
+            `)}
+            ${staticTile("Session", `
+              <p class="field-hint">Written to ServerSettings.ini. SessionName is ignored by the game — the prospect name above becomes -SteamServerName.</p>
+              <label class="field"><span>Join password</span><input data-icarus="joinPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.joinPassword || "")}" placeholder="Leave empty for public" /></label>
+              <label class="field"><span>Admin password</span><input data-icarus="adminPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.adminPassword || "")}" placeholder="Required for /AdminLogin" /></label>
+              <label class="field"><span>Max players</span><input data-icarus="maxPlayers" type="number" min="1" max="20" value="${escapeHtml(icarus.maxPlayers ?? 8)}" /></label>
+              <label class="check-line"><input type="checkbox" data-icarus="stayOnline" ${icarus.stayOnline !== false ? "checked" : ""} /> Stay online when empty (ShutdownIf* = -1)</label>
+            `)}
+            ${staticTile("Ports", `
+              <p class="field-hint">Game and Steam query (UDP). Bound on all interfaces. Forward both from your router for players outside the LAN; TCP copies are also opened in Windows Firewall.</p>
+              <label class="field"><span>Game port</span><input data-icarus="gamePort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.gamePort ?? 17777)}" /></label>
+              <label class="field"><span>Query port</span><input data-icarus="queryPort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.queryPort ?? 27015)}" /></label>
+            `)}
+          </div>
+          <div class="overview-extras">
+            ${collapsibleTile("lobby", "Lobby permissions", `
+              <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsLaunch" ${icarus.allowNonAdminsLaunch !== false ? "checked" : ""} /> Non-admins can launch prospects</label>
+              <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsDelete" ${icarus.allowNonAdminsDelete ? "checked" : ""} /> Non-admins can delete prospect saves</label>
+            `)}
+            ${collapsibleTile("autostart", "Automatic start", `
+              <div class="day-row">${dayChecks("autostartDays", server.autostartDays)}</div>
+              <label class="field"><span>Start Server at</span><input type="time" data-field="autostartTime" value="${escapeHtml(toTimeInput(server.autostartTime))}" /></label>
+              <label class="check-line"><input type="checkbox" data-field="autostartUpdate" ${server.autostartUpdate ? "checked" : ""} /> Update before start</label>
+            `)}
+            ${collapsibleTile("shutdown", "Shutdown / restart", `
+              <div class="day-row">${dayChecks("shutdownDays", server.shutdownDays)}</div>
+              <label class="field"><span>Shutdown at</span><input type="time" data-field="shutdownTime" value="${escapeHtml(toTimeInput(server.shutdownTime))}" /></label>
+              <label class="check-line"><input type="checkbox" data-field="performUpdate" ${server.performUpdate ? "checked" : ""} /> Perform update</label>
+              <label class="check-line"><input type="checkbox" data-field="thenRestart" ${server.thenRestart ? "checked" : ""} /> Then restart</label>
+            `)}
+            ${collapsibleTile("backups", "Prospect backups", `
               <label class="field">
-                <span>Add file</span>
-                <select id="config-file-preset">
-                  <option value="">Choose a file…</option>
-                  <option value="ServerSettings.ini">ServerSettings.ini</option>
-                  <option value="Engine.ini">Engine.ini</option>
-                  <option value="Game.ini">Game.ini</option>
-                  <option value="GameUserSettings.ini">GameUserSettings.ini</option>
-                  <option value="Scalability.ini">Scalability.ini</option>
-                  <option value="Input.ini">Input.ini</option>
-                  <option value="DeviceProfiles.ini">DeviceProfiles.ini</option>
-                  <option value="Admins.txt">Admins.txt</option>
-                  <option value="__custom">Custom filename…</option>
+                <span>Interval</span>
+                <select data-field="autoBackupInterval">
+                  ${INTERVALS.map(v => `<option value="${v}" ${server.autoBackupInterval === v ? "selected" : ""}>${v}</option>`).join("")}
                 </select>
               </label>
-              <label class="field config-custom-name hidden" id="config-custom-wrap">
-                <span>Filename</span>
-                <input id="config-file-name" placeholder="MyMod.ini" />
-              </label>
               <label class="field">
-                <span>Copy from path (optional)</span>
-                <input id="config-file-source" placeholder="C:\\path\\to\\Engine.ini" />
+                <span>Keep last N backups</span>
+                <input type="number" min="10" max="100" data-field="backupLimit" value="${escapeHtml(server.backupLimit || "10")}" />
               </label>
-              <div class="action-row config-add-actions">
-                <button type="button" class="btn primary" data-action="config-file-add">Add to server</button>
+              <div class="field">
+                <span class="field-label">Backup Folder</span>
+                <input class="inline-input" data-field="autoBackupDest" value="${escapeHtml(server.autoBackupDest || "")}" />
               </div>
-            </div>
-            <div class="field">
-              <span class="field-label">Game Log Location</span>
-              <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
-            </div>
-            <div class="field">
-              <span class="field-label">Update Log Location</span>
-              <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
-            </div>
-          `, true)}
+              <div class="action-row">
+                <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
+                <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
+              </div>
+            `)}
+            ${collapsibleTile("mods", "Mods", `
+              <p class="field-hint">Icarus\\Content\\Paks\\mods on this install. The folder is created if it is missing. Copy .pak files in, or delete them here.</p>
+              <div class="config-file-list" id="mod-file-list"><p class="field-hint">Loading…</p></div>
+              <div class="config-add-row">
+                <label class="field">
+                  <span>Copy from path</span>
+                  <input id="mod-file-source" placeholder="C:\\Downloads\\MyMod.pak" />
+                </label>
+                <div class="action-row config-add-actions">
+                  <button type="button" class="btn primary" data-action="mod-file-add">Add mod</button>
+                  <button type="button" class="btn secondary" data-action="mod-open-folder">Open folder</button>
+                </div>
+              </div>
+            `)}
+            ${collapsibleTile("config-files", "Config files", `
+              <p class="field-hint">Files in Icarus\\Saved\\Config\\WindowsServer. Green means the file is on disk. Add a missing INI, copy one in from a path, or delete it here.</p>
+              <div class="config-file-list" id="config-file-list"><p class="field-hint">Loading…</p></div>
+              <div class="config-add-row">
+                <label class="field">
+                  <span>Add file</span>
+                  <select id="config-file-preset">
+                    <option value="">Choose a file…</option>
+                    <option value="ServerSettings.ini">ServerSettings.ini</option>
+                    <option value="Engine.ini">Engine.ini</option>
+                    <option value="Game.ini">Game.ini</option>
+                    <option value="GameUserSettings.ini">GameUserSettings.ini</option>
+                    <option value="Scalability.ini">Scalability.ini</option>
+                    <option value="Input.ini">Input.ini</option>
+                    <option value="DeviceProfiles.ini">DeviceProfiles.ini</option>
+                    <option value="Admins.txt">Admins.txt</option>
+                    <option value="__custom">Custom filename…</option>
+                  </select>
+                </label>
+                <label class="field config-custom-name hidden" id="config-custom-wrap">
+                  <span>Filename</span>
+                  <input id="config-file-name" placeholder="MyMod.ini" />
+                </label>
+                <label class="field">
+                  <span>Copy from path (optional)</span>
+                  <input id="config-file-source" placeholder="C:\\path\\to\\Engine.ini" />
+                </label>
+                <div class="action-row config-add-actions">
+                  <button type="button" class="btn primary" data-action="config-file-add">Add to server</button>
+                </div>
+              </div>
+              <div class="field">
+                <span class="field-label">Game Log Location</span>
+                <input class="inline-input" data-field="logLocation" value="${escapeHtml(server.logLocation || "")}" />
+              </div>
+              <div class="field">
+                <span class="field-label">Update Log Location</span>
+                <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
+              </div>
+            `)}
+          </div>
         </div>
       </section>
 
