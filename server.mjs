@@ -1317,10 +1317,11 @@ function parseA2sPlayerList(msg) {
       let name;
       [name, offset] = readCString(payload, offset);
       if (offset + 8 > payload.length) break;
+      const score = payload.readInt32LE(offset);
       offset += 8;
       const cleaned = String(name || "").trim();
       if (cleaned && !/^(unknown|null|none|player)$/i.test(cleaned)) {
-        names.push({ name: cleaned, ping: null });
+        names.push({ name: cleaned, ping: pingFromA2sScore(score) });
       }
     }
     return { names, count };
@@ -1543,6 +1544,13 @@ function mergePlayerLists(...lists) {
   return [...byName.values()];
 }
 
+function pingFromA2sScore(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n <= 64) return sanitizePing(n * 4);
+  return sanitizePing(n);
+}
+
 function sanitizePing(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -1582,18 +1590,30 @@ async function icmpPingMs(host) {
   const ip = extractIpv4(host);
   if (!ip) return null;
   const cached = icmpCache.get(ip);
-  if (cached && Date.now() - cached.at < 10000) return cached.ms;
+  if (cached && Date.now() - cached.at < 10000 && cached.ms != null) return cached.ms;
+  if (cached && cached.ms == null && Date.now() - cached.at < 3000) return null;
   try {
-    const { stdout } = await execFileAsync(
-      "ping",
-      process.platform === "win32" ? ["-n", "1", "-w", "1000", ip] : ["-c", "1", "-W", "1", ip],
-      { windowsHide: true, timeout: 2500 }
-    );
+    if (process.platform === "win32") {
+      const { stdout } = await execFileAsync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          `$r = Test-Connection -ComputerName '${ip}' -Count 1 -ErrorAction SilentlyContinue; if ($null -eq $r) { '' } elseif ($null -ne $r.ResponseTime) { $r.ResponseTime } else { $r.Latency }`
+        ],
+        { windowsHide: true, timeout: 4000 }
+      );
+      const raw = String(stdout || "").trim();
+      const ms = raw === "0" ? 1 : sanitizePing(raw);
+      icmpCache.set(ip, { ms, at: Date.now() });
+      return ms;
+    }
+    const { stdout } = await execFileAsync("ping", ["-c", "1", "-W", "1", ip], { timeout: 2500 });
     const text = String(stdout || "");
     let ms = null;
     if (/time[<]\s*1\s*ms/i.test(text)) ms = 1;
     else {
-      const match = text.match(/time[=<]\s*(\d+(?:\.\d+)?)\s*ms/i) || text.match(/Average =\s*(\d+)\s*ms/i);
+      const match = text.match(/time[=<]\s*(\d+(?:\.\d+)?)\s*ms/i);
       ms = match ? sanitizePing(match[1]) : null;
     }
     icmpCache.set(ip, { ms, at: Date.now() });
@@ -1602,6 +1622,69 @@ async function icmpPingMs(host) {
     icmpCache.set(ip, { ms: null, at: Date.now() });
     return null;
   }
+}
+
+function tcpConnectRttMs(host, port = 443) {
+  const ip = extractIpv4(host);
+  if (!ip) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const start = Date.now();
+    const sock = net.connect({ host: ip, port, timeout: 800 });
+    const finish = ok => {
+      const ms = Date.now() - start;
+      try { sock.destroy(); } catch { /* ignore */ }
+      if (!ok || ms >= 800) return resolve(null);
+      resolve(sanitizePing(ms) || (ms > 0 ? Math.max(1, Math.round(ms)) : null));
+    };
+    sock.once("connect", () => finish(true));
+    sock.once("error", () => finish(true));
+    sock.once("timeout", () => finish(false));
+  });
+}
+
+async function peerRttMs(host) {
+  const icmp = await icmpPingMs(host);
+  if (icmp != null) return icmp;
+  return tcpConnectRttMs(host);
+}
+
+async function recentGameUdpPeerIps(gamePort) {
+  const port = Number(gamePort);
+  if (!port) return [];
+  const files = [
+    path.join(process.env.SystemRoot || "C:\\Windows", "System32", "LogFiles", "Firewall", "pfirewall.log"),
+    "C:\\Windows\\System32\\LogFiles\\Firewall\\pfirewall.log"
+  ];
+  const seen = new Set();
+  const ips = [];
+  for (const filePath of [...new Set(files)]) {
+    let text = "";
+    try { text = await readLogTail(filePath, 512 * 1024); } catch { continue; }
+    if (!text) continue;
+    for (const line of text.split(/\r?\n/)) {
+      if (!/\bALLOW\b/i.test(line) || !/\bUDP\b/i.test(line)) continue;
+      const parts = line.trim().split(/\s+/);
+      const actionIdx = parts.findIndex(part => /^ALLOW$/i.test(part));
+      if (actionIdx < 0 || actionIdx + 5 >= parts.length) continue;
+      const src = parts[actionIdx + 2];
+      const dst = parts[actionIdx + 3];
+      const srcPort = Number(parts[actionIdx + 4]);
+      const dstPort = Number(parts[actionIdx + 5]);
+      let peer = "";
+      if (dstPort === port) peer = extractIpv4(src);
+      else if (srcPort === port) peer = extractIpv4(dst);
+      if (!peer || seen.has(peer)) continue;
+      seen.add(peer);
+      ips.push(peer);
+    }
+  }
+  return ips.slice(-8);
+}
+
+async function enableFirewallAllowedLog() {
+  if (process.platform !== "win32") return;
+  await runCaptured("netsh", ["advfirewall", "set", "allprofiles", "logging", "allowedconnections", "enable"], 8000);
+  await runCaptured("netsh", ["advfirewall", "set", "allprofiles", "logging", "maxfilesize", "4096"], 8000);
 }
 
 async function tcpRemoteIpsForPid(pid) {
@@ -1862,7 +1945,7 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
     const logged = sanitizePing(pingBySteam.get(id));
     if (logged != null) return logged;
     const ip = steamToIp.get(id);
-    return ip ? icmpPingMs(ip) : null;
+    return ip ? peerRttMs(ip) : null;
   };
   const bySteam = new Map((members || []).map(member => [member.steamId, member]));
   const playing = [];
@@ -1893,10 +1976,20 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
   if (!merged.length && expected && members.length === expected) {
     merged = members.filter(member => member.name).map(member => ({ name: member.name, ping: null }));
   }
-  if (merged.length === 1 && sanitizePing(merged[0].ping) == null) {
-    const remotes = await tcpRemoteIpsForPid(runtime.pid);
-    const samples = (await Promise.all(remotes.slice(0, 8).map(icmpPingMs))).filter(value => value != null);
-    if (samples.length) merged[0].ping = Math.max(...samples);
+  if (merged.some(player => sanitizePing(player.ping) == null)) {
+    const gamePort = parseGamePort(server.launchArgs);
+    const peers = [
+      ...await recentGameUdpPeerIps(gamePort),
+      ...(merged.length === 1 ? await tcpRemoteIpsForPid(runtime.pid) : [])
+    ];
+    const unique = [...new Set(peers)].slice(0, 8);
+    const samples = (await Promise.all(unique.map(peerRttMs))).filter(value => value != null);
+    if (samples.length === 1 || (samples.length && merged.length === 1)) {
+      const ping = Math.max(...samples);
+      for (const player of merged) {
+        if (sanitizePing(player.ping) == null) player.ping = ping;
+      }
+    }
   }
   if (!expected && !merged.length) {
     applyRoster(runtime, []);
@@ -2068,7 +2161,7 @@ async function addFirewallRulesElevated(rules) {
       `}`
     ].join("; ");
   });
-  const elevatedScript = `$ErrorActionPreference = 'Stop'; ${lines.join("; ")}; exit 0`;
+  const elevatedScript = `$ErrorActionPreference = 'Stop'; ${lines.join("; ")}; & netsh advfirewall set allprofiles logging allowedconnections enable | Out-Null; & netsh advfirewall set allprofiles logging maxfilesize 4096 | Out-Null; exit 0`;
   const encodedScript = Buffer.from(elevatedScript, "utf16le").toString("base64");
   const launcher = [
     "$p = Start-Process -FilePath 'powershell.exe'",
@@ -2103,6 +2196,7 @@ async function ensureManagerFirewallPort(port) {
 }
 
 async function ensureFirewall(server) {
+  await enableFirewallAllowedLog().catch(() => {});
   const mainPort = parseGamePort(server.launchArgs);
   if (!mainPort) {
     server.firewallStatus = "No Port";
