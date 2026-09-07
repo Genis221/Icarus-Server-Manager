@@ -1547,14 +1547,80 @@ function sanitizePing(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   const ms = n > 0 && n < 1 ? n * 1000 : n;
-  if (!Number.isFinite(ms) || ms <= 0 || ms > 2500) return null;
+  if (!Number.isFinite(ms) || ms < 1 || ms > 2500) return null;
   return Math.round(ms);
 }
 
 function parsePingFromLine(line) {
-  const match = String(line || "").match(/(?:AverageInPing|InPing|OutPing|PingMS)\s*[=:]\s*(\d+(?:\.\d+)?)/i);
-  if (!match) return null;
-  return sanitizePing(match[1]);
+  const text = String(line || "");
+  const patterns = [
+    /(?:AverageInPing|InPing|OutPing|PingMS|ExactPingV2|ExactPing|AvgLag)\s*[=:]\s*(\d+(?:\.\d+)?)/i,
+    /(?<![A-Za-z])(?:Ping|RTT|Lag)\s*[=:]\s*(\d+(?:\.\d+)?)\s*ms\b/i,
+    /(?<![A-Za-z])(?:Ping|RTT|Lag)\s*[=:]\s*(\d+(?:\.\d+)?)(?:\s|$|,|;|\))/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const ping = sanitizePing(match[1]);
+    if (ping != null) return ping;
+  }
+  return null;
+}
+
+function extractIpv4(text) {
+  const match = String(text || "").match(/\b(\d{1,3}(?:\.\d{1,3}){3})\b/);
+  if (!match) return "";
+  const ip = match[1];
+  const parts = ip.split(".").map(part => Number(part));
+  if (parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return "";
+  if (parts[0] === 0 || parts[0] === 127 || parts[0] >= 224) return "";
+  if (ip === "255.255.255.255") return "";
+  return ip;
+}
+
+async function icmpPingMs(host) {
+  const ip = extractIpv4(host);
+  if (!ip) return null;
+  const cached = icmpCache.get(ip);
+  if (cached && Date.now() - cached.at < 10000) return cached.ms;
+  try {
+    const { stdout } = await execFileAsync(
+      "ping",
+      process.platform === "win32" ? ["-n", "1", "-w", "1000", ip] : ["-c", "1", "-W", "1", ip],
+      { windowsHide: true, timeout: 2500 }
+    );
+    const text = String(stdout || "");
+    let ms = null;
+    if (/time[<]\s*1\s*ms/i.test(text)) ms = 1;
+    else {
+      const match = text.match(/time[=<]\s*(\d+(?:\.\d+)?)\s*ms/i) || text.match(/Average =\s*(\d+)\s*ms/i);
+      ms = match ? sanitizePing(match[1]) : null;
+    }
+    icmpCache.set(ip, { ms, at: Date.now() });
+    return ms;
+  } catch {
+    icmpCache.set(ip, { ms: null, at: Date.now() });
+    return null;
+  }
+}
+
+async function tcpRemoteIpsForPid(pid) {
+  const id = Number(pid);
+  if (!id || process.platform !== "win32") return [];
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        `Get-NetTCPConnection -OwningProcess ${id} -ErrorAction SilentlyContinue | Where-Object { $_.RemoteAddress -and $_.RemoteAddress -notmatch '^(127\\.|0\\.0\\.0\\.0|::1?$|::)' } | Select-Object -ExpandProperty RemoteAddress -Unique`
+      ],
+      { windowsHide: true, timeout: 4000 }
+    );
+    return [...new Set(String(stdout || "").split(/\r?\n/).map(line => extractIpv4(line.trim())).filter(Boolean))];
+  } catch {
+    return [];
+  }
 }
 
 function playersFromLogText(text, excludeNames = []) {
@@ -1571,6 +1637,7 @@ function playersFromLogText(text, excludeNames = []) {
   const addSteam = /(?:Adding user|Adding P2P|RegisterConnection).*?\b(\d{17})\b/i;
   const dropSteam = /(?:Removing P2P|PendingConnectionLost|Closing.*connection|Connection closed).*?(\d{17})/i;
   const pingBySteam = new Map();
+  const steamToIp = new Map();
   let lastName = "";
   const upsert = (name, ping) => {
     if (isJunkPlayerName(name, exclude)) return;
@@ -1587,6 +1654,8 @@ function playersFromLogText(text, excludeNames = []) {
     const added = line.match(addSteam);
     if (added) steamOnline.add(added[1]);
     const steamIdOnLine = line.match(/\b(\d{17})\b/);
+    const ip = extractIpv4(line);
+    if (steamIdOnLine && ip) steamToIp.set(steamIdOnLine[1], ip);
     if (ping != null && steamIdOnLine) pingBySteam.set(steamIdOnLine[1], ping);
     const dropped = line.match(dropSteam);
     if (dropped) {
@@ -1616,7 +1685,7 @@ function playersFromLogText(text, excludeNames = []) {
       upsert(lastName, ping);
     }
   }
-  return { players: [...byName.values()], steamIds: [...steamOnline], pingBySteam };
+  return { players: [...byName.values()], steamIds: [...steamOnline], pingBySteam, steamToIp };
 }
 
 async function playersFromLogs(server) {
@@ -1626,7 +1695,7 @@ async function playersFromLogs(server) {
     const text = await readLogTail(shooterLogPath(server), 8 * 1024 * 1024);
     return playersFromLogText(text, exclude);
   } catch {
-    return { players: [], steamIds: [], pingBySteam: new Map() };
+    return { players: [], steamIds: [], pingBySteam: new Map(), steamToIp: new Map() };
   }
 }
 
@@ -1685,6 +1754,7 @@ async function detectReadyFromLogs(install) {
 }
 
 const steamNameCache = new Map();
+const icmpCache = new Map();
 let processCache = { at: 0, procs: [] };
 let runtimeRefreshPromise = null;
 
@@ -1758,13 +1828,19 @@ async function queryPlayerCountViaRcon(server) {
 }
 
 function applyRoster(runtime, list) {
+  const prevPing = new Map((runtime.playersOnline || []).map(player => [
+    String(player.name || "").toLowerCase(),
+    sanitizePing(player.ping)
+  ]));
   const players = (Array.isArray(list) ? list : [])
     .map(entry => {
       if (!entry) return null;
-      if (typeof entry === "string") return { name: entry, ping: null };
+      if (typeof entry === "string") {
+        return { name: entry, ping: prevPing.get(entry.toLowerCase()) ?? null };
+      }
       const name = String(entry.name || "").trim();
       if (!name) return null;
-      return { name, ping: sanitizePing(entry.ping) };
+      return { name, ping: sanitizePing(entry.ping) ?? prevPing.get(name.toLowerCase()) ?? null };
     })
     .filter(Boolean);
   runtime.playersOnline = players;
@@ -1781,23 +1857,33 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
   const logPlayers = fromLog?.players || [];
   const steamIds = Array.isArray(fromLog?.steamIds) ? fromLog.steamIds : [];
   const pingBySteam = fromLog?.pingBySteam instanceof Map ? fromLog.pingBySteam : new Map();
+  const steamToIp = fromLog?.steamToIp instanceof Map ? fromLog.steamToIp : new Map();
+  const pingOf = async id => {
+    const logged = sanitizePing(pingBySteam.get(id));
+    if (logged != null) return logged;
+    const ip = steamToIp.get(id);
+    return ip ? icmpPingMs(ip) : null;
+  };
   const bySteam = new Map((members || []).map(member => [member.steamId, member]));
-  const playing = (members || [])
-    .filter(member => member.playing && member.name)
-    .map(member => ({ name: member.name, ping: pingBySteam.get(member.steamId) ?? null }));
+  const playing = [];
+  for (const member of members || []) {
+    if (!member.playing || !member.name) continue;
+    playing.push({ name: member.name, ping: await pingOf(member.steamId) });
+  }
   const fromSteamIds = [];
   const unresolved = [];
   const ids = steamIds.length ? steamIds : playing.length ? [] : [...bySteam.keys()].filter(id => bySteam.get(id)?.playing);
   for (const id of ids) {
     const member = bySteam.get(id);
-    const ping = pingBySteam.get(id) ?? null;
+    const ping = await pingOf(id);
     if (member?.name) fromSteamIds.push({ name: member.name, ping });
     else unresolved.push(id);
   }
   if (unresolved.length) {
     const personas = await Promise.all(unresolved.map(id => steamPersonaName(id)));
+    const pings = await Promise.all(unresolved.map(id => pingOf(id)));
     personas.forEach((name, index) => {
-      const ping = pingBySteam.get(unresolved[index]) ?? null;
+      const ping = pings[index];
       if (name) fromSteamIds.push({ name, ping });
       else fromSteamIds.push({ name: `Player ${String(unresolved[index]).slice(-4)}`, ping });
     });
@@ -1806,6 +1892,11 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
   const expected = Number(runtime.players) || 0;
   if (!merged.length && expected && members.length === expected) {
     merged = members.filter(member => member.name).map(member => ({ name: member.name, ping: null }));
+  }
+  if (merged.length === 1 && sanitizePing(merged[0].ping) == null) {
+    const remotes = await tcpRemoteIpsForPid(runtime.pid);
+    const samples = (await Promise.all(remotes.slice(0, 8).map(icmpPingMs))).filter(value => value != null);
+    if (samples.length) merged[0].ping = Math.max(...samples);
   }
   if (!expected && !merged.length) {
     applyRoster(runtime, []);
