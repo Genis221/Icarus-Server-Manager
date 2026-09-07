@@ -326,8 +326,14 @@ button { cursor: pointer; }
 .overview-pin {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
+  grid-auto-rows: 1fr;
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
+}
+.overview-pin .tile {
+  height: 100%;
+  min-height: 0;
+  align-content: start;
 }
 .overview-extras {
   display: grid;
@@ -743,6 +749,7 @@ button { cursor: pointer; }
   .tabs { flex-direction: row; overflow-x: auto; }
   .tab { min-width: 180px; }
   .overview-grid, .ops-grid, .stats, .overview-pin { grid-template-columns: 1fr; }
+  .overview-pin { grid-auto-rows: auto; }
   .overview-extras { width: 100%; }
 }
 
@@ -777,7 +784,7 @@ button { cursor: pointer; }
 .hero h1 { margin: 0 0 4px; font-size: 20px; }
 .session-players { font-size: 12px; }
 .overview-grid, .ops-grid, .overview-stack, .overview-pin { gap: 8px; }
-.overview-pin { grid-template-columns: 1fr 1fr 1fr; }
+.overview-pin { grid-template-columns: 1fr 1fr 1fr; grid-auto-rows: 1fr; }
 .overview-extras { width: min(100%, calc((100% - 16px) / 3)); gap: 6px; }
 .tile-toggle { padding: 8px 10px; }
 .tile-body { padding: 0 10px 10px; }
