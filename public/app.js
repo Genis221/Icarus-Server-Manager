@@ -210,19 +210,36 @@ function appendConsoleLine(entry) {
   if (stick) el.scrollTop = el.scrollHeight;
 }
 
+function playerInitials(name) {
+  const parts = String(name || "").trim().split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  const cleaned = String(name || "").replace(/[^A-Za-z0-9]/g, "");
+  return (cleaned.slice(0, 2) || "?").toUpperCase();
+}
+
 function playerRosterHtml(server) {
+  const count = Number(server.players) || 0;
   const list = Array.isArray(server.playersOnline) && server.playersOnline.length
     ? server.playersOnline
-    : (Array.isArray(server.playerNames) ? server.playerNames.map(name => ({ name, ping: null })) : []);
+    : [];
+  if (!count && !list.length) {
+    return `<p class="player-empty">Nobody online</p>`;
+  }
   if (!list.length) {
-    const count = Number(server.players) || 0;
-    return count > 0 ? escapeHtml(`${count} connected`) : "No players connected";
+    return `<p class="player-empty">${escapeHtml(String(count))} in session</p>`;
   }
   return list.map(player => {
     const name = typeof player === "string" ? player : player.name;
     const ping = typeof player === "object" ? Number(player.ping) : NaN;
-    const pingLabel = Number.isFinite(ping) && ping > 0 ? `${Math.round(ping)}ms` : "—";
-    return `<span class="player-chip"><b>${escapeHtml(name || "Player")}</b><small>${escapeHtml(pingLabel)}</small></span>`;
+    const pingHtml = Number.isFinite(ping) && ping > 0
+      ? `<span class="player-ping">${escapeHtml(String(Math.round(ping)))}ms</span>`
+      : "";
+    const hue = [...String(name || "")].reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 360;
+    return `<div class="player-row">
+      <span class="player-avatar" style="--h:${hue}">${escapeHtml(playerInitials(name))}</span>
+      <span class="player-name">${escapeHtml(name || "Player")}</span>
+      ${pingHtml}
+    </div>`;
   }).join("");
 }
 

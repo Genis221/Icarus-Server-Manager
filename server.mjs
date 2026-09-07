@@ -1825,8 +1825,6 @@ function playersFromLogText(text, excludeNames = []) {
   const lines = String(text || "").split(/\r?\n/);
   const join = /(?:logged in|has joined|joined the (?:server|game|session)|connected to server|Join succeeded).*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
   const playerJoin = /\bPlayer\s+['"]?(\p{L}[\p{L}0-9 _.\-]{1,31})['"]?\s+(?:has\s+)?(?:joined|connected|logged in)/iu;
-  const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?(\p{L}[^"\r\n]{1,31}?)"?(?:\s|$|,)/iu;
-  const displayName = /DisplayName:\s*(\p{L}[\p{L}0-9 _.\-]{1,31})/iu;
   const leave = /(?:logged out|has left|was kicked|was banned)\b.*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
   const addSteam = /(?:Adding user|Adding P2P|RegisterConnection).*?\b(\d{17})\b/i;
   const dropSteam = /(?:Removing P2P|PendingConnectionLost|Closing.*connection|Connection closed).*?(\d{17})/i;
@@ -1859,9 +1857,7 @@ function playersFromLogText(text, excludeNames = []) {
     }
     const steamName = line.match(/user (\d{17}).*\(Name:\s*([^)\]]+?)(?:\s*\[|$)/i);
     if (steamName && !/unknown/i.test(steamName[2])) {
-      const name = steamName[2].trim();
-      steamToName.set(steamName[1], name);
-      upsert(name, ping);
+      steamToName.set(steamName[1], steamName[2].trim());
     }
     let match = line.match(leave);
     if (match) {
@@ -1869,7 +1865,7 @@ function playersFromLogText(text, excludeNames = []) {
       if (name) byName.delete(name.toLowerCase());
       continue;
     }
-    match = line.match(join) || line.match(playerJoin) || line.match(named) || line.match(displayName);
+    match = line.match(join) || line.match(playerJoin);
     if (match) {
       const name = (match[1] || match[2] || "").trim();
       upsert(name, ping);
@@ -1878,6 +1874,10 @@ function playersFromLogText(text, excludeNames = []) {
     if (ping != null && lastName && byName.has(lastName.toLowerCase())) {
       upsert(lastName, ping);
     }
+  }
+  for (const id of steamOnline) {
+    const name = steamToName.get(id);
+    if (name) upsert(name, pingBySteam.get(id));
   }
   return { players: [...byName.values()], steamIds: [...steamOnline], pingBySteam, steamToIp };
 }
@@ -2039,16 +2039,22 @@ function applyRoster(runtime, list) {
     .filter(Boolean);
   runtime.playersOnline = players;
   runtime.playerNames = players.map(player => player.name);
-  if (players.length > Number(runtime.players)) runtime.players = players.length;
 }
 
-async function refreshPlayerRoster(server, runtime, queryPort) {
+async function refreshPlayerRoster(server, runtime, queryPort, liveCount = null) {
   const [fromLog, queried, members] = await Promise.all([
     playersFromLogs(server),
     queryLocalA2sPlayers(queryPort),
     prospectMembers(server)
   ]);
-  const logPlayers = fromLog?.players || [];
+  const a2sNames = Array.isArray(queried) ? queried : [];
+  const knownCount = liveCount != null ? Math.max(0, Number(liveCount) || 0) : null;
+  if (knownCount === 0) {
+    applyRoster(runtime, []);
+    runtime.players = 0;
+    return;
+  }
+
   const steamIds = Array.isArray(fromLog?.steamIds) ? fromLog.steamIds : [];
   const pingBySteam = fromLog?.pingBySteam instanceof Map ? fromLog.pingBySteam : new Map();
   const steamToIp = fromLog?.steamToIp instanceof Map ? fromLog.steamToIp : new Map();
@@ -2066,8 +2072,7 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
   }
   const fromSteamIds = [];
   const unresolved = [];
-  const ids = steamIds.length ? steamIds : playing.length ? [] : [...bySteam.keys()].filter(id => bySteam.get(id)?.playing);
-  for (const id of ids) {
+  for (const id of steamIds) {
     const member = bySteam.get(id);
     const ping = await pingOf(id);
     if (member?.name) fromSteamIds.push({ name: member.name, ping });
@@ -2082,31 +2087,32 @@ async function refreshPlayerRoster(server, runtime, queryPort) {
       else fromSteamIds.push({ name: `Player ${String(unresolved[index]).slice(-4)}`, ping });
     });
   }
-  let merged = mergePlayerLists(playing, queried, logPlayers, fromSteamIds);
-  const expected = Number(runtime.players) || 0;
-  if (!merged.length && expected && members.length === expected) {
-    merged = members.filter(member => member.name).map(member => ({ name: member.name, ping: null }));
-  }
-  if (merged.some(player => sanitizePing(player.ping) == null)) {
+
+  let roster = [];
+  if (a2sNames.length) roster = a2sNames;
+  else if (knownCount > 0) roster = mergePlayerLists(playing, fromSteamIds);
+
+  if (knownCount != null && roster.length > knownCount) roster = roster.slice(0, knownCount);
+
+  if (roster.some(player => sanitizePing(player.ping) == null)) {
     const gamePort = parseGamePort(server.launchArgs);
     const peers = [
       ...await recentGameUdpPeerIps(gamePort),
-      ...(merged.length === 1 ? await tcpRemoteIpsForPid(runtime.pid) : [])
+      ...(roster.length === 1 ? await tcpRemoteIpsForPid(runtime.pid) : [])
     ];
     const unique = [...new Set(peers)].slice(0, 8);
     const samples = (await Promise.all(unique.map(peerRttMs))).filter(value => value != null);
-    if (samples.length === 1 || (samples.length && merged.length === 1)) {
+    if (samples.length === 1 || (samples.length && roster.length === 1)) {
       const ping = Math.max(...samples);
-      for (const player of merged) {
+      for (const player of roster) {
         if (sanitizePing(player.ping) == null) player.ping = ping;
       }
     }
   }
-  if (!expected && !merged.length) {
-    applyRoster(runtime, []);
-    return;
-  }
-  applyRoster(runtime, merged);
+
+  applyRoster(runtime, roster);
+  if (knownCount != null) runtime.players = knownCount;
+  else if (!Number(runtime.players)) runtime.players = roster.length;
 }
 
 async function refreshRuntime(server, { deep = false, procs = null } = {}) {
@@ -2140,7 +2146,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       runtime.availability = "Online";
       runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
-      await refreshPlayerRoster(server, runtime, queryPort);
+      await refreshPlayerRoster(server, runtime, queryPort, runtime.players);
       return;
     }
 
@@ -2149,7 +2155,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       runtime.players = rconPlayers;
     }
 
-    await refreshPlayerRoster(server, runtime, queryPort);
+    await refreshPlayerRoster(server, runtime, queryPort, rconPlayers);
 
     const ready = await detectReadyFromLogs(server.install);
     if (ready) {

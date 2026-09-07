@@ -290,7 +290,7 @@ button { cursor: pointer; }
   display: grid;
   grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.4fr);
   gap: 18px;
-  align-items: center;
+  align-items: start;
   padding: 22px;
   border-radius: 24px;
   border: 1px solid var(--line);
@@ -484,8 +484,9 @@ button { cursor: pointer; }
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(168px, 1.45fr) minmax(0, 1fr);
   gap: 10px;
+  align-items: stretch;
 }
 .stat-card {
   background: var(--stat-bg);
@@ -494,6 +495,7 @@ button { cursor: pointer; }
   padding: 14px;
   display: grid;
   gap: 8px;
+  align-content: start;
 }
 .stat-card > span {
   font-size: 10px;
@@ -521,26 +523,60 @@ button { cursor: pointer; }
 }
 .player-roster {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   min-height: 1.2em;
+  max-height: 168px;
+  overflow: auto;
+}
+.player-empty {
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 550;
   letter-spacing: 0;
   text-transform: none;
 }
-.player-chip {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+.player-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
-  color: var(--text);
+  padding: 4px 6px 4px 4px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
-.player-chip b { font-weight: 650; }
-.player-chip small {
+.player-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #04221d;
+  background: hsl(var(--h, 168) 52% 52%);
+}
+.player-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.player-ping {
   color: var(--accent-2);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 650;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.12);
 }
 .stat-card.good strong { color: var(--green); }
 .stat-card.good strong::before { background: var(--green); }
