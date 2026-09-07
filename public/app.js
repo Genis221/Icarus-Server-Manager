@@ -21,12 +21,18 @@ const state = {
   pollTimer: null,
   saveTimers: new Map(),
   pendingPatches: new Map(),
-  openSections: new Set(),
+  openSections: (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("icarus-open-sections") || "null");
+      if (Array.isArray(raw) && raw.length) return new Set(raw);
+    } catch { /* ignore */ }
+    return new Set(["install", "session"]);
+  })(),
   busy: new Set(),
   repairPrompted: new Set(),
   consoleSource: null,
   consoleServerId: null,
-  panel: localStorage.getItem("icarus-panel") || "overview"
+  panel: localStorage.getItem("icarus-panel") === "console" ? "console" : "overview"
 };
 
 const workspace = document.getElementById("workspace");
@@ -235,6 +241,17 @@ function prospectTypeOptions(selected) {
   ).join("");
 }
 
+function collapsibleTile(id, title, body, wide = false) {
+  const open = state.openSections.has(id);
+  return `<article class="tile collapsible ${wide ? "tile-wide" : ""} ${open ? "is-open" : ""}" data-section="${id}">
+    <button type="button" class="tile-toggle" data-action="toggle-section" data-section="${id}" aria-expanded="${open ? "true" : "false"}">
+      <h2>${title}</h2>
+      <span class="tile-chevron" aria-hidden="true"></span>
+    </button>
+    <div class="tile-body">${body}</div>
+  </article>`;
+}
+
 function renderServer(server) {
   if (!server) {
     workspace.innerHTML = `<div class="empty-view"><p>No server profiles yet.</p></div>`;
@@ -245,7 +262,7 @@ function renderServer(server) {
   const busy = state.busy.has(server.id) || updating;
   const statusUi = statusDisplay(server);
   const icarus = server.icarus || {};
-  const panel = ["overview", "ops", "console"].includes(state.panel) ? state.panel : "overview";
+  const panel = state.panel === "console" ? "console" : "overview";
 
   workspace.innerHTML = `
     <div class="server-page" data-server-id="${server.id}" data-panel="${panel}" data-prospect="${escapeHtml(icarus.prospectMode || "resume")}">
@@ -256,7 +273,6 @@ function renderServer(server) {
         </label>
         <nav class="panel-nav" aria-label="Workspace">
           <button type="button" class="panel-btn" data-panel="overview">Overview</button>
-          <button type="button" class="panel-btn" data-panel="ops">Config</button>
           <button type="button" class="panel-btn" data-panel="console">Live log</button>
         </nav>
         <div class="controls-row">
@@ -294,8 +310,7 @@ function renderServer(server) {
           </div>
         </div>
         <div class="overview-grid">
-          <article class="tile">
-            <h2>Install</h2>
+          ${collapsibleTile("install", "Install", `
             <label class="field">
               <span>Installed Version</span>
               <input data-field="version" value="${escapeHtml(server.version || "")}" readonly />
@@ -308,9 +323,8 @@ function renderServer(server) {
               </div>
             </div>
             ${server.exe ? `<p class="field-hint">Running: ${escapeHtml(server.exe)}</p>` : `<p class="field-hint">Point this at the folder that contains IcarusServer.exe, then Attach.</p>`}
-          </article>
-          <article class="tile">
-            <h2>SteamCMD</h2>
+          `)}
+          ${collapsibleTile("steamcmd", "SteamCMD", `
             <div class="field">
               <span class="field-label">SteamCMD folder</span>
               <input class="inline-input" data-field="steamcmd" value="${escapeHtml(server.steamcmd || "")}" placeholder="C:\\Users\\...\\Documents\\SteamCMD" />
@@ -318,29 +332,21 @@ function renderServer(server) {
             <div class="action-row">
               <button type="button" class="btn primary" data-action="download-steamcmd">Download SteamCMD</button>
             </div>
-          </article>
-            <article class="tile">
-            <h2>Launch</h2>
+          `)}
+          ${collapsibleTile("launch", "Launch", `
             <label class="field">
               <span>Launch Arguments</span>
               <input data-field="launchArgs" value="${escapeHtml(server.launchArgs || "")}" placeholder='-SteamServerName="My Icarus Server" -Port=17777 -QueryPort=27015 -Log' />
             </label>
-          </article>
-        </div>
-      </section>
-
-      <section class="panel-view" data-view="ops">
-        <div class="ops-grid">
-          <article class="tile">
-            <h2>Session</h2>
+          `)}
+          ${collapsibleTile("session", "Session", `
             <p class="field-hint">Written to ServerSettings.ini. SessionName is ignored by the game — the prospect name above becomes -SteamServerName.</p>
             <label class="field"><span>Join password</span><input data-icarus="joinPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.joinPassword || "")}" placeholder="Leave empty for public" /></label>
             <label class="field"><span>Admin password</span><input data-icarus="adminPassword" type="text" autocomplete="off" value="${escapeHtml(icarus.adminPassword || "")}" placeholder="Required for /AdminLogin" /></label>
             <label class="field"><span>Max players</span><input data-icarus="maxPlayers" type="number" min="1" max="20" value="${escapeHtml(icarus.maxPlayers ?? 8)}" /></label>
             <label class="check-line"><input type="checkbox" data-icarus="stayOnline" ${icarus.stayOnline !== false ? "checked" : ""} /> Stay online when empty (ShutdownIf* = -1)</label>
-          </article>
-          <article class="tile">
-            <h2>Prospect on start</h2>
+          `)}
+          ${collapsibleTile("prospect", "Prospect on start", `
             <p class="field-hint">Boot order is Load, then Resume, then Create. Empty lobby if none apply.</p>
             <label class="field">
               <span>Startup mode</span>
@@ -370,33 +376,28 @@ function renderServer(server) {
               <label class="field"><span>Save name</span><input data-icarus="createSave" value="${escapeHtml(icarus.createSave || "")}" placeholder="Required, e.g. MyBase" /></label>
               <label class="check-line"><input type="checkbox" data-icarus="createHardcore" ${icarus.createHardcore ? "checked" : ""} /> Hardcore (no respawn)</label>
             </div>
-          </article>
-          <article class="tile">
-            <h2>Lobby permissions</h2>
+          `)}
+          ${collapsibleTile("lobby", "Lobby permissions", `
             <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsLaunch" ${icarus.allowNonAdminsLaunch !== false ? "checked" : ""} /> Non-admins can launch prospects</label>
             <label class="check-line"><input type="checkbox" data-icarus="allowNonAdminsDelete" ${icarus.allowNonAdminsDelete ? "checked" : ""} /> Non-admins can delete prospect saves</label>
-          </article>
-          <article class="tile">
-            <h2>Ports</h2>
+          `)}
+          ${collapsibleTile("ports", "Ports", `
             <p class="field-hint">Game and Steam query (UDP). Bound on all interfaces. Forward both from your router for players outside the LAN; TCP copies are also opened in Windows Firewall.</p>
             <label class="field"><span>Game port</span><input data-icarus="gamePort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.gamePort ?? 17777)}" /></label>
             <label class="field"><span>Query port</span><input data-icarus="queryPort" type="number" min="1024" max="65535" value="${escapeHtml(icarus.queryPort ?? 27015)}" /></label>
-          </article>
-          <article class="tile">
-            <h2>Automatic start</h2>
+          `)}
+          ${collapsibleTile("autostart", "Automatic start", `
             <div class="day-row">${dayChecks("autostartDays", server.autostartDays)}</div>
             <label class="field"><span>Start Server at</span><input type="time" data-field="autostartTime" value="${escapeHtml(toTimeInput(server.autostartTime))}" /></label>
             <label class="check-line"><input type="checkbox" data-field="autostartUpdate" ${server.autostartUpdate ? "checked" : ""} /> Update before start</label>
-          </article>
-          <article class="tile">
-            <h2>Shutdown / restart</h2>
+          `)}
+          ${collapsibleTile("shutdown", "Shutdown / restart", `
             <div class="day-row">${dayChecks("shutdownDays", server.shutdownDays)}</div>
             <label class="field"><span>Shutdown at</span><input type="time" data-field="shutdownTime" value="${escapeHtml(toTimeInput(server.shutdownTime))}" /></label>
             <label class="check-line"><input type="checkbox" data-field="performUpdate" ${server.performUpdate ? "checked" : ""} /> Perform update</label>
             <label class="check-line"><input type="checkbox" data-field="thenRestart" ${server.thenRestart ? "checked" : ""} /> Then restart</label>
-          </article>
-          <article class="tile">
-            <h2>Prospect backups</h2>
+          `)}
+          ${collapsibleTile("backups", "Prospect backups", `
             <label class="field">
               <span>Interval</span>
               <select data-field="autoBackupInterval">
@@ -415,9 +416,8 @@ function renderServer(server) {
               <button type="button" class="btn primary" data-action="backup" ${server.backupInProgress ? "disabled" : ""}>Backup Now</button>
               <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
             </div>
-          </article>
-          <article class="tile tile-wide">
-            <h2>Mods</h2>
+          `)}
+          ${collapsibleTile("mods", "Mods", `
             <p class="field-hint">Icarus\\Content\\Paks\\mods on this install. The folder is created if it is missing. Copy .pak files in, or delete them here.</p>
             <div class="config-file-list" id="mod-file-list"><p class="field-hint">Loading…</p></div>
             <div class="config-add-row">
@@ -430,9 +430,8 @@ function renderServer(server) {
                 <button type="button" class="btn secondary" data-action="mod-open-folder">Open folder</button>
               </div>
             </div>
-          </article>
-          <article class="tile tile-wide">
-            <h2>Config files</h2>
+          `, true)}
+          ${collapsibleTile("config-files", "Config files", `
             <p class="field-hint">Files in Icarus\\Saved\\Config\\WindowsServer. Green means the file is on disk. Add a missing INI, copy one in from a path, or delete it here.</p>
             <div class="config-file-list" id="config-file-list"><p class="field-hint">Loading…</p></div>
             <div class="config-add-row">
@@ -471,7 +470,7 @@ function renderServer(server) {
               <span class="field-label">Update Log Location</span>
               <input class="inline-input" data-field="updateLogLocation" value="${escapeHtml(server.updateLogLocation || "")}" />
             </div>
-          </article>
+          `, true)}
         </div>
       </section>
 
@@ -1130,7 +1129,7 @@ workspace.addEventListener("click", async event => {
   const panelBtn = event.target.closest(".panel-btn[data-panel]");
   if (panelBtn && workspace.contains(panelBtn)) {
     const next = panelBtn.dataset.panel;
-    if (["overview", "ops", "console"].includes(next)) {
+    if (["overview", "console"].includes(next)) {
       state.panel = next;
       localStorage.setItem("icarus-panel", next);
       const page = workspace.querySelector(".server-page");
@@ -1141,6 +1140,21 @@ workspace.addEventListener("click", async event => {
 
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
+
+  if (action === "toggle-section") {
+    const id = event.target.closest("[data-section]")?.dataset.section;
+    if (!id) return;
+    const tile = event.target.closest(".tile");
+    if (state.openSections.has(id)) state.openSections.delete(id);
+    else state.openSections.add(id);
+    localStorage.setItem("icarus-open-sections", JSON.stringify([...state.openSections]));
+    const open = state.openSections.has(id);
+    tile?.classList.toggle("is-open", open);
+    const btn = tile?.querySelector(".tile-toggle");
+    if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+    return;
+  }
+
   const server = activeServer();
   if (!server) return;
 
