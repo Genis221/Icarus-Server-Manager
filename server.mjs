@@ -1272,10 +1272,46 @@ function queryA2sInfo(host, port, timeoutMs = 700) {
   });
 }
 
-function queryA2sPlayers(host, port, timeoutMs = 800) {
+function parseA2sPlayerList(msg) {
+  if (!msg || msg.length < 6) return [];
+  let payload = msg;
+  if (msg[0] === 0xFF && msg[4] === 0x44) payload = msg.subarray(4);
+  else if (msg[0] !== 0x44) return [];
+  const tryParse = skipIndex => {
+    let offset = 1;
+    const count = payload[offset++];
+    if (!Number.isFinite(count) || count > 64) return { names: [], count: 0 };
+    const names = [];
+    for (let i = 0; i < count && offset < payload.length; i++) {
+      if (skipIndex) {
+        if (offset >= payload.length) break;
+        offset += 1;
+      }
+      let name;
+      [name, offset] = readCString(payload, offset);
+      if (offset + 8 > payload.length) break;
+      offset += 8;
+      const cleaned = String(name || "").trim();
+      if (cleaned && !/^(unknown|null|none|player)$/i.test(cleaned)) {
+        names.push({ name: cleaned, ping: null });
+      }
+    }
+    return { names, count };
+  };
+  const withIndex = tryParse(true);
+  const withoutIndex = tryParse(false);
+  const score = parsed => {
+    if (!parsed.names.length) return -1;
+    return parsed.names.length === parsed.count ? parsed.names.length + 10 : parsed.names.length;
+  };
+  return score(withoutIndex) > score(withIndex) ? withoutIndex.names : withIndex.names;
+}
+
+function queryA2sPlayers(host, port, timeoutMs = 1200) {
   return new Promise(resolve => {
     const sock = dgram.createSocket("udp4");
     const challengeReq = Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0x55, 0xFF, 0xFF, 0xFF, 0xFF]);
+    const chunks = new Map();
     let settled = false;
     const finish = value => {
       if (settled) return;
@@ -1294,22 +1330,23 @@ function queryA2sPlayers(host, port, timeoutMs = 800) {
           ]), port, host);
           return;
         }
-        if (msg.length < 6 || msg[4] !== 0x44) return;
-        let offset = 5;
-        const count = msg[offset++];
-        const names = [];
-        for (let i = 0; i < count && offset < msg.length; i++) {
-          offset += 1;
-          let name;
-          [name, offset] = readCString(msg, offset);
-          const score = offset + 4 <= msg.length ? msg.readInt32LE(offset) : 0;
-          offset += 4;
-          const duration = offset + 4 <= msg.length ? msg.readFloatLE(offset) : 0;
-          offset += 4;
-          const cleaned = String(name || "").trim();
-          if (cleaned) names.push({ name: cleaned, score, duration, ping: null });
+        if (msg.length >= 9 && msg[0] === 0xFE) {
+          const total = msg[8];
+          const number = msg[9];
+          const body = msg.subarray(10);
+          chunks.set(number, body);
+          if (chunks.size >= total && total > 0) {
+            const ordered = [];
+            for (let i = 0; i < total; i++) {
+              if (!chunks.has(i)) return;
+              ordered.push(chunks.get(i));
+            }
+            finish(parseA2sPlayerList(Buffer.concat(ordered)));
+          }
+          return;
         }
-        finish(names);
+        if (msg.length < 6 || msg[4] !== 0x44) return;
+        finish(parseA2sPlayerList(msg));
       } catch {
         // keep waiting until timeout
       }
@@ -1329,44 +1366,90 @@ async function queryLocalA2sPlayers(port) {
   for (const host of hosts) {
     if (!host || seen.has(host)) continue;
     seen.add(host);
-    const names = await queryA2sPlayers(host, port, 700);
-    if (names) return names;
+    const names = await queryA2sPlayers(host, port, 1200);
+    if (Array.isArray(names) && names.length) return names;
   }
   return null;
 }
 
-function playersFromLogText(text) {
+function isJunkPlayerName(name, exclude) {
+  const text = String(name || "").trim();
+  if (text.length < 2 || text.length > 32) return true;
+  if (/^(unknown|null|none|player|dedicatedserver|server)$/i.test(text)) return true;
+  if (/^(openworld_|outpost|olympus|prometheus|tier\d+_)/i.test(text)) return true;
+  if (exclude.has(text.toLowerCase())) return true;
+  return false;
+}
+
+function mergePlayerLists(...lists) {
   const byName = new Map();
+  for (const list of lists) {
+    for (const entry of list || []) {
+      const name = String(entry?.name || entry || "").trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const prev = byName.get(key) || { name, ping: null };
+      const ping = Number(entry?.ping);
+      if (Number.isFinite(ping)) prev.ping = ping;
+      prev.name = name;
+      byName.set(key, prev);
+    }
+  }
+  return [...byName.values()];
+}
+
+function playersFromLogText(text, excludeNames = []) {
+  const exclude = new Set((excludeNames || []).map(name => String(name || "").trim().toLowerCase()).filter(Boolean));
+  const byName = new Map();
+  const steamToName = new Map();
+  const steamOnline = new Set();
   const lines = String(text || "").split(/\r?\n/);
-  const join = /(?:logged in|has joined|joined the (?:server|game|session)|connected to server).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
-  const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?([^"\r\n]{2,32})"?/i;
-  const leave = /(?:logged out|has left|disconnected|Removing P2P).*?(?:['"]([^'"]{2,32})['"]|:\s*([A-Za-z0-9][A-Za-z0-9 _.\-]{1,31}))/i;
+  const join = /(?:logged in|has joined|joined the (?:server|game|session)|connected to server|Join succeeded).*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
+  const playerJoin = /\bPlayer\s+['"]?(\p{L}[\p{L}0-9 _.\-]{1,31})['"]?\s+(?:has\s+)?(?:joined|connected|logged in)/iu;
+  const named = /(?:PlayerName|DisplayName|CharacterName)\s*[=:]\s*"?(\p{L}[^"\r\n]{1,31}?)"?(?:\s|$|,)/iu;
+  const displayName = /DisplayName:\s*(\p{L}[\p{L}0-9 _.\-]{1,31})/iu;
+  const leave = /(?:logged out|has left|was kicked|was banned)\b.*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
   const pingRe = /(?:AverageInPing|InPing|OutPing|\bPing|\bRTT)\s*[=:]\s*(\d{1,4})/i;
+  const addSteam = /Adding.*?\b(\d{17})\b/i;
+  const dropSteam = /(?:Removing P2P|Closing.*connection|Connection closed).*?(\d{17})/i;
   let lastName = "";
   const upsert = (name, ping) => {
+    if (isJunkPlayerName(name, exclude)) return;
     const key = name.toLowerCase();
     const prev = byName.get(key) || { name, ping: null };
     if (Number.isFinite(ping)) prev.ping = ping;
     prev.name = name;
     byName.set(key, prev);
+    lastName = name;
   };
   for (const line of lines) {
     const pingMatch = line.match(pingRe);
     const ping = pingMatch ? Number(pingMatch[1]) : null;
+    const added = line.match(addSteam);
+    if (added) steamOnline.add(added[1]);
+    const dropped = line.match(dropSteam);
+    if (dropped) {
+      steamOnline.delete(dropped[1]);
+      const mapped = steamToName.get(dropped[1]);
+      if (mapped) byName.delete(mapped.toLowerCase());
+    }
+    const steamName = line.match(/user (\d{17}).*\(Name:\s*([^)\]]+?)(?:\s*\[|$)/i);
+    if (steamName && !/unknown/i.test(steamName[2])) {
+      const name = steamName[2].trim();
+      steamToName.set(steamName[1], name);
+      upsert(name, ping);
+    }
     let match = line.match(leave);
     if (match) {
       const name = (match[1] || match[2] || "").trim();
       if (name) byName.delete(name.toLowerCase());
       continue;
     }
-    match = line.match(join) || line.match(named);
+    match = line.match(join) || line.match(playerJoin) || line.match(named) || line.match(displayName);
     if (match) {
       const name = (match[1] || match[2] || "").trim();
-      if (name && !/^(unknown|null|none|player)$/i.test(name)) {
-        lastName = name;
-        upsert(name, ping);
-        continue;
-      }
+      upsert(name, ping);
+      continue;
     }
     if (ping != null && lastName && byName.has(lastName.toLowerCase())) {
       upsert(lastName, ping);
@@ -1377,8 +1460,10 @@ function playersFromLogText(text) {
 
 async function playersFromLogs(server) {
   try {
-    const text = await readLogTail(shooterLogPath(server), 512 * 1024);
-    return playersFromLogText(text);
+    const icarus = server?.icarus || {};
+    const exclude = [icarus.lastProspectName, icarus.loadProspect, icarus.createSave, server?.profile];
+    const text = await readLogTail(shooterLogPath(server), 1024 * 1024);
+    return playersFromLogText(text, exclude);
   } catch {
     return [];
   }
@@ -1512,21 +1597,14 @@ function applyRoster(runtime, list) {
 }
 
 async function refreshPlayerRoster(server, runtime, queryPort) {
-  if (!Number(runtime.players)) {
+  const fromLog = await playersFromLogs(server);
+  const queried = await queryLocalA2sPlayers(queryPort);
+  const merged = mergePlayerLists(queried, fromLog);
+  if (!Number(runtime.players) && !merged.length) {
     applyRoster(runtime, []);
     return;
   }
-  const fromLog = await playersFromLogs(server);
-  const pingByName = new Map(fromLog.map(player => [player.name.toLowerCase(), player.ping]));
-  const queried = await queryLocalA2sPlayers(queryPort);
-  if (Array.isArray(queried) && queried.length) {
-    applyRoster(runtime, queried.map(player => ({
-      name: player.name,
-      ping: pingByName.get(String(player.name || "").toLowerCase()) ?? player.ping ?? null
-    })));
-    return;
-  }
-  applyRoster(runtime, fromLog);
+  applyRoster(runtime, merged);
 }
 
 async function refreshRuntime(server, { deep = false, procs = null } = {}) {
