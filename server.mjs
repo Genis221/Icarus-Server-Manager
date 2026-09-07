@@ -333,8 +333,132 @@ async function attachToIcarusInstall(input) {
   return { install, exe };
 }
 
+function windowsServerConfigDir(server) {
+  return path.join(server.install || "", "Icarus", "Saved", "Config", "WindowsServer");
+}
+
 function settingsIniPath(server) {
-  return path.join(server.install, "Icarus", "Saved", "Config", "WindowsServer", "ServerSettings.ini");
+  return path.join(windowsServerConfigDir(server), "ServerSettings.ini");
+}
+
+const KNOWN_CONFIG_FILES = [
+  "ServerSettings.ini",
+  "Engine.ini",
+  "Game.ini",
+  "GameUserSettings.ini",
+  "Scalability.ini",
+  "Input.ini",
+  "DeviceProfiles.ini",
+  "Admins.txt"
+];
+
+const DEFAULT_SERVER_SETTINGS = `[/Script/Icarus.DedicatedServerSettings]
+SessionName=
+JoinPassword=
+MaxPlayers=8
+AdminPassword=
+ShutdownIfNotJoinedFor=-1
+ShutdownIfEmptyFor=-1
+AllowNonAdminsToLaunchProspects=True
+AllowNonAdminsToDeleteProspects=False
+LoadProspect=
+CreateProspect=
+ResumeProspect=True
+LastProspectName=
+`;
+
+function configFileTemplate(name) {
+  const key = String(name || "").toLowerCase();
+  if (key === "serversettings.ini") return DEFAULT_SERVER_SETTINGS;
+  if (key === "engine.ini") return "[Core.System]\n";
+  if (key === "game.ini") return "[/Script/Engine.GameSession]\n";
+  if (key === "gameusersettings.ini") return "[/Script/Engine.GameUserSettings]\n";
+  if (key === "scalability.ini") return "[ScalabilitySettings]\n";
+  if (key === "input.ini") return "[/Script/Engine.InputSettings]\n";
+  if (key === "deviceprofiles.ini") return "[DeviceProfiles]\n";
+  if (key === "admins.txt") return "; Optional SteamID64 list, one per line. In-game admin still uses /AdminLogin.\n";
+  return "";
+}
+
+function safeConfigFileName(name) {
+  const base = path.basename(String(name || "").trim());
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.(ini|txt|cfg)$/i.test(base)) return "";
+  return base;
+}
+
+function configFilePath(server, name) {
+  const safe = safeConfigFileName(name);
+  if (!safe || !server.install) return "";
+  const dir = path.resolve(windowsServerConfigDir(server));
+  const full = path.resolve(dir, safe);
+  if (!isPathInside(dir, full)) return "";
+  return full;
+}
+
+async function listConfigFiles(server) {
+  const folder = windowsServerConfigDir(server);
+  const present = new Map();
+  if (await pathExists(folder)) {
+    const entries = await readdir(folder, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const safe = safeConfigFileName(entry.name);
+      if (!safe) continue;
+      const full = path.join(folder, entry.name);
+      const st = await stat(full);
+      present.set(safe.toLowerCase(), {
+        name: entry.name,
+        exists: true,
+        bytes: st.size,
+        sizeLabel: formatBytes(st.size),
+        modified: st.mtime.toISOString()
+      });
+    }
+  }
+  const files = [];
+  const seen = new Set();
+  for (const name of KNOWN_CONFIG_FILES) {
+    const found = present.get(name.toLowerCase());
+    seen.add(name.toLowerCase());
+    files.push(found || { name, exists: false, bytes: 0, sizeLabel: "", modified: null });
+  }
+  for (const file of present.values()) {
+    if (seen.has(file.name.toLowerCase())) continue;
+    files.push(file);
+  }
+  return { folder, files };
+}
+
+async function addConfigFile(server, { name, content, source } = {}) {
+  const filePath = configFilePath(server, name);
+  if (!filePath) throw Object.assign(new Error("Use a simple .ini, .txt, or .cfg filename"), { status: 400 });
+  if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const from = String(source || "").trim();
+  if (from) {
+    if (!(await pathExists(from))) throw Object.assign(new Error("Source file was not found"), { status: 404 });
+    const st = await stat(from);
+    if (!st.isFile()) throw Object.assign(new Error("Source path must be a file"), { status: 400 });
+    if (st.size > 1024 * 1024) throw Object.assign(new Error("Config files are limited to 1 MB"), { status: 400 });
+    await copyFile(from, filePath);
+  } else if (content != null && String(content).length) {
+    const text = String(content);
+    if (Buffer.byteLength(text) > 1024 * 1024) throw Object.assign(new Error("Config files are limited to 1 MB"), { status: 400 });
+    await writeFile(filePath, text, "utf8");
+  } else if (safeConfigFileName(name).toLowerCase() === "serversettings.ini") {
+    await writeIcarusSettings(server);
+  } else {
+    await writeFile(filePath, configFileTemplate(name), "utf8");
+  }
+  return filePath;
+}
+
+async function deleteConfigFile(server, name) {
+  const filePath = configFilePath(server, name);
+  if (!filePath) throw Object.assign(new Error("Invalid config filename"), { status: 400 });
+  if (!(await pathExists(filePath))) throw Object.assign(new Error("File is not on disk"), { status: 404 });
+  await rm(filePath, { force: true });
+  return filePath;
 }
 
 function gusIniPath(server) {
@@ -416,20 +540,6 @@ async function writeIcarusSettings(server) {
   server.icarus = icarus;
   const iniPath = settingsIniPath(server);
   await mkdir(path.dirname(iniPath), { recursive: true });
-  const DEFAULT_SERVER_SETTINGS = `[/Script/Icarus.DedicatedServerSettings]
-SessionName=
-JoinPassword=
-MaxPlayers=8
-AdminPassword=
-ShutdownIfNotJoinedFor=-1
-ShutdownIfEmptyFor=-1
-AllowNonAdminsToLaunchProspects=True
-AllowNonAdminsToDeleteProspects=False
-LoadProspect=
-CreateProspect=
-ResumeProspect=True
-LastProspectName=
-`;
   let raw = (await pathExists(iniPath)) ? await readFile(iniPath, "utf8") : DEFAULT_SERVER_SETTINGS;
   const shutdown = icarus.stayOnline ? "-1" : "300.000000";
   const load = icarus.prospectMode === "load" ? icarus.loadProspect : "";
@@ -3083,6 +3193,30 @@ async function handleApi(req, res, url) {
       scheduleSave();
     }
     return sendJson(res, 200, { ...publicServer(server), firewallStatus: status });
+  }
+  if (method === "GET" && action === "config-files") {
+    if (!server.install) return sendJson(res, 400, { error: "Install location is not set" });
+    return sendJson(res, 200, await listConfigFiles(server));
+  }
+  if (method === "POST" && action === "config-files") {
+    const body = (await readBody(req)) || {};
+    const filePath = await addConfigFile(server, body);
+    addActivity(`Added ${path.basename(filePath)} for ${server.profile}`, "success");
+    return sendJson(res, 200, { ok: true, path: filePath, ...(await listConfigFiles(server)) });
+  }
+  if (method === "POST" && action === "config-files/delete") {
+    const body = (await readBody(req)) || {};
+    const filePath = await deleteConfigFile(server, body.name);
+    addActivity(`Deleted ${path.basename(filePath)} for ${server.profile}`, "info");
+    return sendJson(res, 200, { ok: true, ...(await listConfigFiles(server)) });
+  }
+  if (method === "POST" && action === "config-files/open") {
+    const body = (await readBody(req)) || {};
+    const filePath = configFilePath(server, body.name);
+    if (!filePath) return sendJson(res, 400, { error: "Invalid config filename" });
+    if (!server.install) return sendJson(res, 400, { error: "Install location is not set" });
+    await openInEditor(filePath);
+    return sendJson(res, 200, { ok: true, path: filePath });
   }
   if (method === "POST" && action === "open-ini") {
     await readBody(req).catch(() => null);

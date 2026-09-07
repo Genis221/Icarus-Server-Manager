@@ -416,10 +416,37 @@ function renderServer(server) {
               <label class="check-line"><input type="checkbox" data-field="autoBackupEnabled" ${server.autoBackupEnabled ? "checked" : ""} /> Enable Auto Backup</label>
             </div>
           </article>
-          <article class="tile">
-            <h2>Config &amp; logs</h2>
-            <div class="action-row">
-              <button type="button" class="btn secondary" data-action="open-gus-ini">Edit ServerSettings.ini</button>
+          <article class="tile tile-wide">
+            <h2>Config files</h2>
+            <p class="field-hint">Files in Icarus\\Saved\\Config\\WindowsServer. Green means the file is on disk. Add a missing INI, copy one in from a path, or delete it here.</p>
+            <div class="config-file-list" id="config-file-list"><p class="field-hint">Loading…</p></div>
+            <div class="config-add-row">
+              <label class="field">
+                <span>Add file</span>
+                <select id="config-file-preset">
+                  <option value="">Choose a file…</option>
+                  <option value="ServerSettings.ini">ServerSettings.ini</option>
+                  <option value="Engine.ini">Engine.ini</option>
+                  <option value="Game.ini">Game.ini</option>
+                  <option value="GameUserSettings.ini">GameUserSettings.ini</option>
+                  <option value="Scalability.ini">Scalability.ini</option>
+                  <option value="Input.ini">Input.ini</option>
+                  <option value="DeviceProfiles.ini">DeviceProfiles.ini</option>
+                  <option value="Admins.txt">Admins.txt</option>
+                  <option value="__custom">Custom filename…</option>
+                </select>
+              </label>
+              <label class="field config-custom-name hidden" id="config-custom-wrap">
+                <span>Filename</span>
+                <input id="config-file-name" placeholder="MyMod.ini" />
+              </label>
+              <label class="field">
+                <span>Copy from path (optional)</span>
+                <input id="config-file-source" placeholder="C:\\path\\to\\Engine.ini" />
+              </label>
+              <div class="action-row config-add-actions">
+                <button type="button" class="btn primary" data-action="config-file-add">Add to server</button>
+              </div>
             </div>
             <div class="field">
               <span class="field-label">Game Log Location</span>
@@ -454,9 +481,66 @@ function renderServer(server) {
   `;
 
   connectConsole(server.id);
+  loadConfigFiles(server);
 }
 
-function toTimeInput(value) {
+function configFileListHtml(files, folder) {
+  if (!Array.isArray(files) || !files.length) {
+    return `<p class="field-hint">${folder ? escapeHtml(folder) : "No config folder yet."}</p>`;
+  }
+  const rows = files.map(file => {
+    const present = Boolean(file.exists);
+    const meta = present
+      ? `${escapeHtml(file.sizeLabel || "0 B")}`
+      : "Not on disk";
+    const actions = present
+      ? `<button type="button" class="btn secondary" data-action="config-file-open" data-name="${escapeHtml(file.name)}">Open</button>
+         <button type="button" class="btn danger" data-action="config-file-delete" data-name="${escapeHtml(file.name)}">Delete</button>`
+      : `<button type="button" class="btn primary" data-action="config-file-create" data-name="${escapeHtml(file.name)}">Add</button>`;
+    return `<div class="config-file-row ${present ? "is-present" : "is-missing"}">
+      <span class="config-file-status" title="${present ? "On disk" : "Missing"}"></span>
+      <div class="config-file-meta">
+        <b>${escapeHtml(file.name)}</b>
+        <small>${meta}</small>
+      </div>
+      <div class="config-file-actions">${actions}</div>
+    </div>`;
+  }).join("");
+  return `${rows}<p class="field-hint">${escapeHtml(folder || "")}</p>`;
+}
+
+async function loadConfigFiles(server) {
+  const el = document.getElementById("config-file-list");
+  if (!el || !server) return;
+  if (!server.install) {
+    el.innerHTML = `<p class="field-hint">Attach an install folder first.</p>`;
+    return;
+  }
+  try {
+    const data = await api(`/api/servers/${server.id}/config-files`);
+    el.innerHTML = configFileListHtml(data.files || [], data.folder);
+  } catch (err) {
+    el.innerHTML = `<p class="field-hint">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function addConfigFileFromForm(server, name) {
+  const preset = document.getElementById("config-file-preset");
+  const custom = document.getElementById("config-file-name");
+  const source = document.getElementById("config-file-source");
+  const chosen = String(name || (preset?.value === "__custom" ? custom?.value : preset?.value) || "").trim();
+  if (!chosen || chosen === "__custom") {
+    toast("Choose or type a config filename", "error");
+    return;
+  }
+  await api(`/api/servers/${server.id}/config-files`, {
+    method: "POST",
+    body: { name: chosen, source: String(source?.value || "").trim() }
+  });
+  toast(`Added ${chosen}`, "success");
+  if (source) source.value = "";
+  await loadConfigFiles(server);
+}
   const text = String(value || "09:00");
   const match = text.match(/^(\d{1,2}):(\d{2})/);
   if (!match) return "09:00";
@@ -617,11 +701,10 @@ async function maybePromptRepair(server) {
   await refreshState({ silent: true });
 }
 
-async function confirmDelete(server) {
+async function confirmDanger(title, message) {
   return new Promise(resolve => {
-    document.getElementById("confirm-title").textContent = "Delete Server Profile";
-    document.getElementById("confirm-message").textContent =
-      `Delete profile "${server.profile}"? This does not delete server files on disk.`;
+    document.getElementById("confirm-title").textContent = title;
+    document.getElementById("confirm-message").textContent = message;
     confirmDialog.showModal();
     const onOk = () => { cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
@@ -633,6 +716,13 @@ async function confirmDelete(server) {
     document.getElementById("confirm-ok").addEventListener("click", onOk);
     document.getElementById("confirm-cancel").addEventListener("click", onCancel);
   });
+}
+
+async function confirmDelete(server) {
+  return confirmDanger(
+    "Delete Server Profile",
+    `Delete profile "${server.profile}"? This does not delete server files on disk.`
+  );
 }
 
 async function askFirewallConsent(server) {
@@ -1036,6 +1126,22 @@ workspace.addEventListener("click", async event => {
     } else if (action === "open-gus-ini") {
       await api(`/api/servers/${server.id}/open-ini`, { method: "POST", body: { kind: "settings" } });
       toast("Opened ServerSettings.ini");
+    } else if (action === "config-file-add") {
+      await addConfigFileFromForm(server);
+    } else if (action === "config-file-create") {
+      const name = event.target.closest("[data-name]")?.dataset.name;
+      await addConfigFileFromForm(server, name);
+    } else if (action === "config-file-open") {
+      const name = event.target.closest("[data-name]")?.dataset.name;
+      await api(`/api/servers/${server.id}/config-files/open`, { method: "POST", body: { name } });
+      toast(`Opened ${name}`);
+    } else if (action === "config-file-delete") {
+      const name = event.target.closest("[data-name]")?.dataset.name;
+      const ok = await confirmDanger("Delete config file", `Delete ${name} from this server's WindowsServer config folder?`);
+      if (!ok) return;
+      await api(`/api/servers/${server.id}/config-files/delete`, { method: "POST", body: { name } });
+      toast(`Deleted ${name}`);
+      await loadConfigFiles(server);
     } else if (action === "attach-install") {
       const target = String(server.install || "").trim();
       if (!target) {
@@ -1124,6 +1230,10 @@ function applyControlPatch(el) {
 workspace.addEventListener("input", event => applyControlPatch(event.target));
 workspace.addEventListener("change", event => {
   const el = event.target;
+  if (el?.id === "config-file-preset") {
+    document.getElementById("config-custom-wrap")?.classList.toggle("hidden", el.value !== "__custom");
+    return;
+  }
   if (el?.dataset?.icarus || el?.tagName === "SELECT") applyControlPatch(el);
 });
 

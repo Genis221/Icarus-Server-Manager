@@ -340,6 +340,39 @@ button { cursor: pointer; }
   color: var(--muted);
 }
 .tile-wide { grid-column: 1 / -1; }
+.config-file-list { display: grid; gap: 6px; }
+.config-file-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--input-bg);
+}
+.config-file-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.config-file-row.is-present .config-file-status { background: var(--green); }
+.config-file-row.is-missing .config-file-status { background: var(--warn); }
+.config-file-meta { display: grid; gap: 1px; min-width: 0; }
+.config-file-meta b { font-size: 13px; font-weight: 650; }
+.config-file-meta small { color: var(--muted); font-size: 11px; }
+.config-file-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.config-add-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.2fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+.config-add-actions { margin: 0; }
+@media (max-width: 860px) {
+  .config-add-row { grid-template-columns: 1fr; }
+}
 
 .field { display: grid; gap: 6px; }
 .field > span, .field-label {
