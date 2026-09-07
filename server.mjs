@@ -1109,7 +1109,7 @@ async function ensureLogWatch(server) {
         const buf = Buffer.alloc(length);
         await fh.read(buf, 0, length, runtime.logOffset);
         runtime.logOffset = st.size;
-        const text = buf.toString("utf8");
+        const text = decodeLogBuffer(buf);
         for (const line of text.split(/\r?\n/)) {
           if (line.trim()) appendConsoleLog(server.id, line, "log");
         }
@@ -1216,6 +1216,21 @@ async function getArkVersionFromLogs(install) {
     }
   }
   return "Unknown";
+}
+
+function decodeLogBuffer(buf) {
+  if (!buf || !buf.length) return "";
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) {
+    return buf.subarray(2).toString("utf16le");
+  }
+  if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) {
+    return buf.subarray(2).swap16().toString("utf16le");
+  }
+  let nulls = 0;
+  const sample = Math.min(buf.length, 240);
+  for (let i = 0; i < sample; i++) if (buf[i] === 0) nulls += 1;
+  if (nulls > sample / 5) return buf.toString("utf16le");
+  return buf.toString("utf8");
 }
 
 function readCString(buf, offset) {
@@ -1372,6 +1387,124 @@ async function queryLocalA2sPlayers(port) {
   return null;
 }
 
+function jsonStringValue(raw) {
+  if (!raw) return "";
+  try {
+    return JSON.parse(`"${raw}"`);
+  } catch {
+    return String(raw).replace(/\\"/g, "\"");
+  }
+}
+
+function parseProspectMembers(text) {
+  const start = String(text || "").indexOf('"AssociatedMembers"');
+  if (start < 0) return [];
+  const bracket = text.indexOf("[", start);
+  if (bracket < 0) return [];
+  let depth = 0;
+  let end = -1;
+  for (let i = bracket; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return [];
+  const chunk = text.slice(bracket, end + 1);
+  const members = [];
+  for (const obj of chunk.split("{").slice(1)) {
+    const steam = obj.match(/"UserID"\s*:\s*"?(\d{17})"?/);
+    if (!steam) continue;
+    const character = obj.match(/"CharacterName"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    const account = obj.match(/"AccountName"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    const name = jsonStringValue(character?.[1]) || jsonStringValue(account?.[1]);
+    members.push({
+      steamId: steam[1],
+      name,
+      playing: /"IsCurrentlyPlaying"\s*:\s*true/i.test(obj)
+    });
+  }
+  return members;
+}
+
+async function resolveProspectFile(server) {
+  const dir = path.join(server.install || "", "Icarus", "Saved", "PlayerData", "DedicatedServer", "Prospects");
+  const names = [
+    server?.icarus?.loadProspect,
+    server?.icarus?.lastProspectName,
+    server?.icarus?.createSave
+  ].map(name => String(name || "").trim()).filter(Boolean);
+  try {
+    const raw = await readFile(settingsIniPath(server), "utf8");
+    const last = readIniValue(raw, "LastProspectName");
+    const load = readIniValue(raw, "LoadProspect");
+    if (last) names.unshift(last);
+    if (load) names.unshift(load);
+  } catch {
+    // use names from state
+  }
+  const seen = new Set();
+  for (const name of names) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const file = path.join(dir, name.toLowerCase().endsWith(".json") ? name : `${name}.json`);
+    if (await pathExists(file)) return file;
+  }
+  try {
+    const files = (await readdir(dir)).filter(file => file.toLowerCase().endsWith(".json"));
+    const ranked = await Promise.all(files.map(async file => {
+      const full = path.join(dir, file);
+      const st = await stat(full);
+      return { full, m: st.mtimeMs };
+    }));
+    ranked.sort((a, b) => b.m - a.m);
+    return ranked[0]?.full || "";
+  } catch {
+    return "";
+  }
+}
+
+async function prospectMembers(server) {
+  try {
+    const file = await resolveProspectFile(server);
+    if (!file) return [];
+    return parseProspectMembers(await readFileHead(file));
+  } catch {
+    return [];
+  }
+}
+
+async function steamPersonaName(steamId) {
+  const id = String(steamId || "").trim();
+  if (!/^\d{17}$/.test(id)) return "";
+  const cached = steamNameCache.get(id);
+  if (cached && Date.now() - cached.at < 30 * 60 * 1000) return cached.name;
+  try {
+    const res = await fetch(`https://steamcommunity.com/profiles/${id}/?xml=1`, {
+      headers: { "User-Agent": "IcarusServerManager/1.0" },
+      signal: AbortSignal.timeout(2500)
+    });
+    if (!res.ok) return cached?.name || "";
+    const xml = await res.text();
+    const match = xml.match(/<steamID><!\[CDATA\[(.*?)\]\]><\/steamID>/i)
+      || xml.match(/<steamID>([^<]+)<\/steamID>/i);
+    const name = String(match?.[1] || "").trim();
+    if (name && !/^unknown$/i.test(name)) {
+      steamNameCache.set(id, { name, at: Date.now() });
+      return name;
+    }
+  } catch {
+    // Steam profile lookup is best-effort
+  }
+  return cached?.name || "";
+}
+
 function isJunkPlayerName(name, exclude) {
   const text = String(name || "").trim();
   if (text.length < 2 || text.length > 32) return true;
@@ -1410,8 +1543,8 @@ function playersFromLogText(text, excludeNames = []) {
   const displayName = /DisplayName:\s*(\p{L}[\p{L}0-9 _.\-]{1,31})/iu;
   const leave = /(?:logged out|has left|was kicked|was banned)\b.*?(?:['"]([^'"]{2,32})['"]|:\s*(\p{L}[\p{L}0-9 _.\-]{1,31}))/iu;
   const pingRe = /(?:AverageInPing|InPing|OutPing|\bPing|\bRTT)\s*[=:]\s*(\d{1,4})/i;
-  const addSteam = /Adding.*?\b(\d{17})\b/i;
-  const dropSteam = /(?:Removing P2P|Closing.*connection|Connection closed).*?(\d{17})/i;
+  const addSteam = /(?:Adding user|Adding P2P|RegisterConnection).*?\b(\d{17})\b/i;
+  const dropSteam = /(?:Removing P2P|PendingConnectionLost|Closing.*connection|Connection closed).*?(\d{17})/i;
   let lastName = "";
   const upsert = (name, ping) => {
     if (isJunkPlayerName(name, exclude)) return;
@@ -1455,17 +1588,17 @@ function playersFromLogText(text, excludeNames = []) {
       upsert(lastName, ping);
     }
   }
-  return [...byName.values()];
+  return { players: [...byName.values()], steamIds: [...steamOnline] };
 }
 
 async function playersFromLogs(server) {
   try {
     const icarus = server?.icarus || {};
     const exclude = [icarus.lastProspectName, icarus.loadProspect, icarus.createSave, server?.profile];
-    const text = await readLogTail(shooterLogPath(server), 1024 * 1024);
+    const text = await readLogTail(shooterLogPath(server), 8 * 1024 * 1024);
     return playersFromLogText(text, exclude);
   } catch {
-    return [];
+    return { players: [], steamIds: [] };
   }
 }
 
@@ -1495,6 +1628,21 @@ async function readLogTail(filePath, maxBytes = 256 * 1024) {
     if (length <= 0) return "";
     const buf = Buffer.alloc(length);
     await fh.read(buf, 0, length, start);
+    return decodeLogBuffer(buf);
+  } finally {
+    await fh.close();
+  }
+}
+
+async function readFileHead(filePath, maxBytes = 768 * 1024) {
+  if (!(await pathExists(filePath))) return "";
+  const fh = await open(filePath, "r");
+  try {
+    const st = await fh.stat();
+    const length = Math.min(maxBytes, st.size);
+    if (length <= 0) return "";
+    const buf = Buffer.alloc(length);
+    await fh.read(buf, 0, length, 0);
     return buf.toString("utf8");
   } finally {
     await fh.close();
@@ -1508,6 +1656,7 @@ async function detectReadyFromLogs(install) {
   return /server has completed startup|set as ready for clients|full startup|startup is complete|steady state|server is ready|server ready/i.test(text);
 }
 
+const steamNameCache = new Map();
 let processCache = { at: 0, procs: [] };
 let runtimeRefreshPromise = null;
 
@@ -1597,10 +1746,38 @@ function applyRoster(runtime, list) {
 }
 
 async function refreshPlayerRoster(server, runtime, queryPort) {
-  const fromLog = await playersFromLogs(server);
-  const queried = await queryLocalA2sPlayers(queryPort);
-  const merged = mergePlayerLists(queried, fromLog);
-  if (!Number(runtime.players) && !merged.length) {
+  const [fromLog, queried, members] = await Promise.all([
+    playersFromLogs(server),
+    queryLocalA2sPlayers(queryPort),
+    prospectMembers(server)
+  ]);
+  const logPlayers = fromLog?.players || [];
+  const steamIds = Array.isArray(fromLog?.steamIds) ? fromLog.steamIds : [];
+  const bySteam = new Map((members || []).map(member => [member.steamId, member]));
+  const playing = (members || [])
+    .filter(member => member.playing && member.name)
+    .map(member => ({ name: member.name, ping: null }));
+  const fromSteamIds = [];
+  const unresolved = [];
+  const ids = steamIds.length ? steamIds : playing.length ? [] : [...bySteam.keys()].filter(id => bySteam.get(id)?.playing);
+  for (const id of ids) {
+    const member = bySteam.get(id);
+    if (member?.name) fromSteamIds.push({ name: member.name, ping: null });
+    else unresolved.push(id);
+  }
+  if (unresolved.length) {
+    const personas = await Promise.all(unresolved.map(id => steamPersonaName(id)));
+    personas.forEach((name, index) => {
+      if (name) fromSteamIds.push({ name, ping: null });
+      else fromSteamIds.push({ name: `Player ${String(unresolved[index]).slice(-4)}`, ping: null });
+    });
+  }
+  let merged = mergePlayerLists(playing, queried, logPlayers, fromSteamIds);
+  const expected = Number(runtime.players) || 0;
+  if (!merged.length && expected && members.length === expected) {
+    merged = members.filter(member => member.name).map(member => ({ name: member.name, ping: null }));
+  }
+  if (!expected && !merged.length) {
     applyRoster(runtime, []);
     return;
   }
