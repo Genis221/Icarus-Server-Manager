@@ -1963,7 +1963,7 @@ async function listArkProcesses() {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'IcarusServer.exe' -or $_.Name -eq 'IcarusServer-Win64-Shipping.exe' } | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"
+        "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'IcarusServer.exe' -or $_.Name -eq 'IcarusServer-Win64-Shipping.exe' } | Select-Object ProcessId,ExecutablePath,@{n='StartedAt';e={if ($_.CreationDate) { [int64]([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() } else { 0 }}} | ConvertTo-Json -Compress"
       ],
       { windowsHide: true, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
     );
@@ -1975,7 +1975,8 @@ async function listArkProcesses() {
       .filter(r => r && r.ProcessId)
       .map(r => ({
         pid: Number(r.ProcessId),
-        exe: String(r.ExecutablePath || "")
+        exe: String(r.ExecutablePath || ""),
+        startedAt: Number(r.StartedAt) || 0
       }));
   } catch {
     return [];
@@ -2128,15 +2129,20 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
   runtime.maxPlayers = parseMaxPlayers(server);
   if (match) {
     runtime.status = "running";
+    const processStarted = Number(match.startedAt) || 0;
+    if (!runtime.startedAt || runtime.pid !== match.pid) {
+      runtime.startedAt = processStarted || Date.now();
+    } else if (processStarted && processStarted < runtime.startedAt) {
+      runtime.startedAt = processStarted;
+    }
     runtime.pid = match.pid;
-    if (!runtime.startedAt) runtime.startedAt = Date.now();
+    const processAgeMs = runtime.startedAt ? Date.now() - runtime.startedAt : 0;
+    const young = processAgeMs >= 0 && processAgeMs < 2 * 60 * 1000;
 
     if (!deep) {
       // Fast path for API responses — never block on A2S/log I/O.
       if (runtime.availability === "Offline" || !runtime.availability) {
-        runtime.availability = runtime.startedAt && Date.now() - runtime.startedAt < 8 * 60 * 1000
-          ? "Starting…"
-          : "Online";
+        runtime.availability = young ? "Starting…" : "Online";
       }
       return;
     }
@@ -2144,13 +2150,14 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     const queryPort = parseQueryPort(server.launchArgs);
     const info = await queryLocalA2s(queryPort);
     if (info) {
-      const ready = await detectReadyFromLogs(server.install);
-      const young = Boolean(runtime.startedAt && Date.now() - runtime.startedAt < 2 * 60 * 1000);
-      runtime.availability = !young || ready ? "Online" : "Starting…";
+      runtime.availability = "Online";
       runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
       await refreshPlayerRoster(server, runtime, queryPort, runtime.players);
-      if (young && !ready && !(runtime.playersOnline || []).length) runtime.players = 0;
+      if (young && !(runtime.playersOnline || []).length) {
+        const ready = await detectReadyFromLogs(server.install);
+        if (!ready) runtime.players = 0;
+      }
       return;
     }
 
@@ -2166,7 +2173,7 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
       runtime.availability = "Online";
       return;
     }
-    if (runtime.startedAt && Date.now() - runtime.startedAt < 8 * 60 * 1000) {
+    if (runtime.startedAt && Date.now() - runtime.startedAt < 2 * 60 * 1000) {
       runtime.availability = "Starting…";
     } else {
       runtime.availability = "Online";
@@ -2402,7 +2409,7 @@ async function startServer(server, { applyFirewall = false } = {}) {
   if (existing) {
     runtime.status = "running";
     runtime.pid = existing.pid;
-    runtime.startedAt = Date.now();
+    runtime.startedAt = Number(existing.startedAt) || Date.now();
     runtime.availability = "Online";
     return publicServer(server);
   }
