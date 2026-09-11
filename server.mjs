@@ -1410,12 +1410,18 @@ function queryA2sInfo(host, port, timeoutMs = 700) {
   });
 }
 
+function readWideCString(buf, offset) {
+  let end = offset;
+  while (end + 1 < buf.length && (buf[end] !== 0 || buf[end + 1] !== 0)) end += 2;
+  return [buf.toString("utf16le", offset, end).replace(/\u0000/g, "").trim(), end + 2];
+}
+
 function parseA2sPlayerList(msg) {
   if (!msg || msg.length < 6) return [];
   let payload = msg;
   if (msg[0] === 0xFF && msg[4] === 0x44) payload = msg.subarray(4);
   else if (msg[0] !== 0x44) return [];
-  const tryParse = skipIndex => {
+  const tryParse = (skipIndex, wide) => {
     let offset = 1;
     const count = payload[offset++];
     if (!Number.isFinite(count) || count > 64) return { names: [], count: 0 };
@@ -1426,24 +1432,20 @@ function parseA2sPlayerList(msg) {
         offset += 1;
       }
       let name;
-      [name, offset] = readCString(payload, offset);
+      [name, offset] = wide ? readWideCString(payload, offset) : readCString(payload, offset);
       if (offset + 8 > payload.length) break;
       const score = payload.readInt32LE(offset);
       offset += 8;
       const cleaned = String(name || "").trim();
-      if (cleaned && !/^(unknown|null|none|player)$/i.test(cleaned)) {
-        names.push({ name: cleaned, ping: pingFromA2sScore(score) });
-      }
+      if (!isJunkPlayerName(cleaned)) names.push({ name: cleaned, ping: pingFromA2sScore(score) });
     }
     return { names, count };
   };
-  const withIndex = tryParse(true);
-  const withoutIndex = tryParse(false);
-  const score = parsed => {
-    if (!parsed.names.length) return -1;
-    return parsed.names.length === parsed.count ? parsed.names.length + 10 : parsed.names.length;
-  };
-  return score(withoutIndex) > score(withIndex) ? withoutIndex.names : withIndex.names;
+  const indexed = tryParse(true, false);
+  if (indexed.names.length) return indexed.names;
+  const indexedWide = tryParse(true, true);
+  if (indexedWide.names.length) return indexedWide.names;
+  return [];
 }
 
 function queryA2sPlayers(host, port, timeoutMs = 1200) {
@@ -1629,9 +1631,10 @@ async function steamPersonaName(steamId) {
   return cached?.name || "";
 }
 
-function isJunkPlayerName(name, exclude) {
+function isJunkPlayerName(name, exclude = new Set()) {
   const text = String(name || "").trim();
   if (text.length < 2 || text.length > 32) return true;
+  if (/^[\x00-\x1f]+$/.test(text)) return true;
   if (/^(unknown|null|none|player|dedicatedserver|server)$/i.test(text)) return true;
   if (/^(openworld_|outpost|olympus|prometheus|tier\d+_)/i.test(text)) return true;
   if (exclude.has(text.toLowerCase())) return true;
@@ -2029,12 +2032,9 @@ function applyRoster(runtime, list) {
   const players = (Array.isArray(list) ? list : [])
     .map(entry => {
       if (!entry) return null;
-      if (typeof entry === "string") {
-        return { name: entry, ping: prevPing.get(entry.toLowerCase()) ?? null };
-      }
-      const name = String(entry.name || "").trim();
-      if (!name) return null;
-      return { name, ping: sanitizePing(entry.ping) ?? prevPing.get(name.toLowerCase()) ?? null };
+      const name = String(typeof entry === "string" ? entry : entry.name || "").trim();
+      if (isJunkPlayerName(name)) return null;
+      return { name, ping: sanitizePing(entry?.ping) ?? prevPing.get(name.toLowerCase()) ?? null };
     })
     .filter(Boolean);
   runtime.playersOnline = players;
@@ -2088,9 +2088,10 @@ async function refreshPlayerRoster(server, runtime, queryPort, liveCount = null)
     });
   }
 
+  const usableA2s = a2sNames.filter(player => !isJunkPlayerName(player?.name));
   let roster = [];
-  if (a2sNames.length) roster = a2sNames;
-  else if (knownCount > 0) roster = mergePlayerLists(playing, fromSteamIds);
+  if (usableA2s.length) roster = usableA2s;
+  else if (knownCount > 0) roster = mergePlayerLists(playing, fromSteamIds).filter(player => !isJunkPlayerName(player?.name));
 
   if (knownCount != null && roster.length > knownCount) roster = roster.slice(0, knownCount);
 
@@ -2143,10 +2144,13 @@ async function refreshRuntime(server, { deep = false, procs = null } = {}) {
     const queryPort = parseQueryPort(server.launchArgs);
     const info = await queryLocalA2s(queryPort);
     if (info) {
-      runtime.availability = "Online";
+      const ready = await detectReadyFromLogs(server.install);
+      const young = Boolean(runtime.startedAt && Date.now() - runtime.startedAt < 2 * 60 * 1000);
+      runtime.availability = !young || ready ? "Online" : "Starting…";
       runtime.players = Number(info.players) || 0;
       runtime.maxPlayers = Number(info.max_players) || runtime.maxPlayers;
       await refreshPlayerRoster(server, runtime, queryPort, runtime.players);
+      if (young && !ready && !(runtime.playersOnline || []).length) runtime.players = 0;
       return;
     }
 

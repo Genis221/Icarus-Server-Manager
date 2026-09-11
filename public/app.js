@@ -228,7 +228,10 @@ function playerRosterHtml(server) {
   if (!list.length) {
     return `<p class="player-empty">${escapeHtml(String(count))} in session</p>`;
   }
-  return list.map(player => {
+  return list.filter(player => {
+    const name = String(typeof player === "string" ? player : player?.name || "").trim();
+    return name.length >= 2;
+  }).map(player => {
     const name = typeof player === "string" ? player : player.name;
     const ping = typeof player === "object" ? Number(player.ping) : NaN;
     const pingHtml = Number.isFinite(ping) && ping > 0
