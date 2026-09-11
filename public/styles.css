@@ -484,9 +484,9 @@ button { cursor: pointer; }
 
 .stats {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(168px, 1.45fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(220px, 1.8fr) minmax(0, 1fr);
   gap: 10px;
-  align-items: stretch;
+  align-items: start;
 }
 .stat-card {
   background: var(--stat-bg);
@@ -523,13 +523,15 @@ button { cursor: pointer; }
 }
 .player-roster {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
   min-height: 1.2em;
-  max-height: 168px;
+  max-height: 92px;
   overflow: auto;
 }
 .player-empty {
   margin: 0;
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 12px;
   font-weight: 550;
@@ -538,18 +540,19 @@ button { cursor: pointer; }
 }
 .player-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
-  padding: 4px 6px 4px 4px;
-  border-radius: 9px;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 5px 3px 3px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.04);
 }
 .player-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
   display: grid;
   place-items: center;
   font-size: 8px;
