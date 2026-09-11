@@ -317,22 +317,24 @@ function renderServer(server) {
             <h1>${escapeHtml(server.profile)}</h1>
           </div>
           <div class="stats">
-            <article class="stat-card ${statusUi.tone}">
-              <span>Status</span>
-              <strong>${escapeHtml(statusUi.label)}</strong>
-            </article>
-            <article class="stat-card ${availabilityClass(server.availability)}">
-              <span>Availability</span>
-              <strong>${escapeHtml(server.availability || "Offline")}</strong>
-            </article>
-            <article class="stat-card players-card ${Number(server.players) > 0 ? "good" : ""}">
+            <div class="stats-stack">
+              <article class="stat-card ${statusUi.tone}" data-stat="status">
+                <span>Status</span>
+                <strong>${escapeHtml(statusUi.label)}</strong>
+              </article>
+              <article class="stat-card ${availabilityClass(server.availability)}" data-stat="availability">
+                <span>Availability</span>
+                <strong>${escapeHtml(server.availability || "Offline")}</strong>
+              </article>
+              <article class="stat-card ${firewallClass(server.firewallStatus)}" data-stat="firewall">
+                <span>Firewall</span>
+                <strong>${escapeHtml(server.firewallStatus || "Not Checked")}</strong>
+              </article>
+            </div>
+            <article class="stat-card players-card ${Number(server.players) > 0 ? "good" : ""}" data-stat="players">
               <span>Players</span>
               <strong>${Number(server.players) || 0} / ${Number(server.maxPlayers) || 8}</strong>
               <div class="player-roster">${playerRosterHtml(server)}</div>
-            </article>
-            <article class="stat-card ${firewallClass(server.firewallStatus)}">
-              <span>Firewall</span>
-              <strong>${escapeHtml(server.firewallStatus || "Not Checked")}</strong>
             </article>
           </div>
         </div>
@@ -700,34 +702,39 @@ function updateLiveStats(server) {
   if (!server) return;
   const page = workspace.querySelector(`[data-server-id="${server.id}"]`);
   if (!page) return;
-  const cards = [...page.querySelectorAll(".stats .stat-card")];
+  const cards = {
+    status: page.querySelector("[data-stat='status']"),
+    availability: page.querySelector("[data-stat='availability']"),
+    players: page.querySelector("[data-stat='players']"),
+    firewall: page.querySelector("[data-stat='firewall']")
+  };
   const updating = String(server.status).toLowerCase() === "updating";
   const busy = state.busy.has(server.id) || updating;
   const running = String(server.status).toLowerCase() === "running";
   const playerCount = Number(server.players) || 0;
   const statusUi = statusDisplay(server);
 
-  if (cards[0]) {
-    const strong = cards[0].querySelector("strong");
+  if (cards.status) {
+    const strong = cards.status.querySelector("strong");
     if (strong) strong.textContent = statusUi.label;
-    setStatTone(cards[0], statusUi.tone);
+    setStatTone(cards.status, statusUi.tone);
   }
-  if (cards[1]) {
-    const strong = cards[1].querySelector("strong");
+  if (cards.availability) {
+    const strong = cards.availability.querySelector("strong");
     if (strong) strong.textContent = server.availability || "Offline";
-    setStatTone(cards[1], availabilityClass(server.availability));
+    setStatTone(cards.availability, availabilityClass(server.availability));
   }
-  if (cards[2]) {
-    const strong = cards[2].querySelector("strong");
+  if (cards.players) {
+    const strong = cards.players.querySelector("strong");
     if (strong) strong.textContent = `${playerCount} / ${Number(server.maxPlayers) || 8}`;
-    setStatTone(cards[2], playerCount > 0 ? "good" : "");
-    const roster = cards[2].querySelector(".player-roster");
+    setStatTone(cards.players, playerCount > 0 ? "good" : "");
+    const roster = cards.players.querySelector(".player-roster");
     if (roster) roster.innerHTML = playerRosterHtml(server);
   }
-  if (cards[3]) {
-    const strong = cards[3].querySelector("strong");
+  if (cards.firewall) {
+    const strong = cards.firewall.querySelector("strong");
     if (strong) strong.textContent = server.firewallStatus || "Not Checked";
-    setStatTone(cards[3], firewallClass(server.firewallStatus));
+    setStatTone(cards.firewall, firewallClass(server.firewallStatus));
   }
 
   const toggle = page.querySelector("[data-action='toggle']");
