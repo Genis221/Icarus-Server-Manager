@@ -2211,6 +2211,23 @@ async function terminatePid(pid) {
   try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForProcessGone(server, timeoutMs = 25000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    processCache.at = 0;
+    const match = await findProcessForInstall(server);
+    if (!match) return true;
+    await terminatePid(match.pid);
+    await delay(500);
+  }
+  processCache.at = 0;
+  return !(await findProcessForInstall(server));
+}
+
 function runCaptured(command, args, timeoutMs = 30000) {
   return new Promise(resolve => {
     const child = spawn(command, args, {
@@ -2389,7 +2406,10 @@ async function copyServerLogOnStop(server) {
 
 async function startServer(server, { applyFirewall = false } = {}) {
   const runtime = runtimeOf(server.id);
-  if (runtime.status === "running" || runtime.updating) {
+  if (runtime.updating) {
+    throw Object.assign(new Error("Server is already running or updating"), { status: 409 });
+  }
+  if (String(runtime.status).toLowerCase() === "running") {
     throw Object.assign(new Error("Server is already running or updating"), { status: 409 });
   }
   if (!server.install) throw Object.assign(new Error("Install location is not set"), { status: 400 });
@@ -2474,6 +2494,12 @@ async function stopServer(server, { copyLog = true } = {}) {
   const match = await findProcessForInstall(server);
   const pid = match?.pid || runtime.pid;
   if (pid) await terminatePid(pid);
+  const gone = await waitForProcessGone(server);
+  if (!gone) {
+    appendConsoleLog(server.id, "Stop requested, but IcarusServer.exe is still running.", "error");
+  } else {
+    await delay(1500);
+  }
 
   runtime.status = "stopped";
   runtime.pid = null;
@@ -2649,6 +2675,8 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
   appendConsoleLog(server.id, `=== Update / Verify started for ${server.profile} ===`, "system");
   appendConsoleLog(server.id, `Install folder: ${server.install}`, "system");
 
+  let payload;
+  let shouldComplete = false;
   try {
     let steamcmdExe = path.join(server.steamcmd || "", "steamcmd.exe");
     if (!(await pathExists(steamcmdExe))) {
@@ -2728,14 +2756,16 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
     }
 
     await refreshRuntime(server, { deep: true });
-    const payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
-    if (typeof onComplete === "function" && !hit06 && result.code === 0) {
-      try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
-    }
-    return payload;
+    payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
+    shouldComplete = typeof onComplete === "function" && !hit06;
   } finally {
     runtime.updating = false;
+    if (runtime.status === "Updating") runtime.status = "stopped";
   }
+  if (shouldComplete) {
+    try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
+  }
+  return payload;
 }
 
 async function zipDirectory(sourceDir, zipPath) {
@@ -3000,17 +3030,25 @@ async function automationTick() {
           runtime.shutdownTriggeredDate = key;
           try {
             await stopServer(server);
-            if (server.performUpdate) {
-              await runSteamUpdate(server, {
-                onComplete: server.thenRestart
-                  ? async () => { await startServer(server); }
-                  : undefined
-              });
-            } else if (server.thenRestart) {
-              await startServer(server);
-            }
           } catch (err) {
             addActivity(`Scheduled shutdown failed for ${server.profile}: ${err.message}`, "error");
+            continue;
+          }
+          if (server.performUpdate) {
+            try {
+              await runSteamUpdate(server);
+            } catch (err) {
+              addActivity(`Scheduled update failed for ${server.profile}: ${err.message}`, "error");
+            }
+          }
+          if (server.thenRestart) {
+            try {
+              await delay(2000);
+              await startServer(server);
+              addActivity(`Scheduled restart started ${server.profile}`, "success");
+            } catch (err) {
+              addActivity(`Scheduled restart failed for ${server.profile}: ${err.message}`, "error");
+            }
           }
         }
       }
