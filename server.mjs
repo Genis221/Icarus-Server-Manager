@@ -2597,12 +2597,15 @@ async function wipeInstallKeepSaved(server) {
   await clearStuckSteamState(server);
 }
 
-function spawnSteamCmdUpdate(server, steamcmdExe) {
+function spawnSteamCmdUpdate(server, steamcmdExe, { validate = true, timeoutMs = 90 * 60 * 1000 } = {}) {
   return new Promise(async (resolve) => {
     const args = [
+      "+@ShutdownOnFailedCommand", "1",
+      "+@NoPromptForPassword", "1",
       "+force_install_dir", server.install,
       "+login", "anonymous",
-      "+app_update", STEAM_APP_ID, "validate",
+      "+app_update", STEAM_APP_ID,
+      ...(validate ? ["validate"] : []),
       "+quit"
     ];
     appendConsoleLog(server.id, `> steamcmd ${args.join(" ")}`, "command");
@@ -2618,11 +2621,22 @@ function spawnSteamCmdUpdate(server, steamcmdExe) {
     let output = "";
     let stdoutBuf = "";
     let stderrBuf = "";
+    let settled = false;
     const child = spawn(steamcmdExe, args, {
       cwd: path.dirname(steamcmdExe),
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
+
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      flushLines("", "log", true);
+      flushLines("", "error", true);
+      try { logStream.end(); } catch { /* ignore */ }
+      resolve(result);
+    };
 
     const flushLines = (raw, level, isFinal = false) => {
       const text = raw.toString("utf8");
@@ -2642,23 +2656,42 @@ function spawnSteamCmdUpdate(server, steamcmdExe) {
       }
     };
 
+    const timer = setTimeout(async () => {
+      appendConsoleLog(server.id, `SteamCMD timed out after ${Math.round(timeoutMs / 60000)} minutes — stopping it.`, "error");
+      try {
+        if (child.pid) await terminatePid(child.pid);
+        else child.kill();
+      } catch { /* ignore */ }
+      finish({ code: 124, output, timedOut: true });
+    }, timeoutMs);
+
     child.stdout.on("data", chunk => flushLines(chunk, "log"));
     child.stderr.on("data", chunk => flushLines(chunk, "error"));
     child.on("error", err => {
-      try { logStream.end(); } catch { /* ignore */ }
       appendConsoleLog(server.id, `SteamCMD failed to start: ${err.message}`, "error");
-      resolve({ code: 1, output, error: err.message });
+      finish({ code: 1, output, error: err.message });
     });
     child.on("close", code => {
-      flushLines("", "log", true);
-      flushLines("", "error", true);
-      try { logStream.end(); } catch { /* ignore */ }
-      resolve({ code: Number(code) || 0, output });
+      finish({ code: Number.isFinite(Number(code)) ? Number(code) : 1, output });
     });
   });
 }
 
-async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
+function steamCmdLooksSuccessful(result) {
+  if (!result) return false;
+  if (result.timedOut) return false;
+  const text = String(result.output || "");
+  if (/state is 0x6/i.test(text)) return false;
+  if (/Success! App '\d+' fully installed|Success! App '\d+' already up to date/i.test(text)) return true;
+  return Number(result.code) === 0;
+}
+
+async function runSteamUpdate(server, {
+  onComplete,
+  repair = false,
+  validate = true,
+  timeoutMs = validate ? 90 * 60 * 1000 : 25 * 60 * 1000
+} = {}) {
   const runtime = runtimeOf(server.id);
   if (!server.install) {
     throw Object.assign(new Error("Install location is not set"), { status: 400 });
@@ -2674,8 +2707,9 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
   addActivity(`Updating ${server.profile} via SteamCMD`, "info");
   appendConsoleLog(server.id, `=== Update / Verify started for ${server.profile} ===`, "system");
   appendConsoleLog(server.id, `Install folder: ${server.install}`, "system");
+  appendConsoleLog(server.id, validate ? "Mode: update + validate" : "Mode: update only (no validate)", "system");
 
-  let payload;
+  let payload = publicServer(server);
   let shouldComplete = false;
   try {
     let steamcmdExe = path.join(server.steamcmd || "", "steamcmd.exe");
@@ -2714,18 +2748,25 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
       // bootstrap may exit non-zero
     }
 
-    appendConsoleLog(server.id, `Updating/validating app ${STEAM_APP_ID} into ${server.install}`, "system");
-    let result = await spawnSteamCmdUpdate(server, steamcmdExe);
-    let hit06 = /state is 0x6/i.test(result.output);
+    appendConsoleLog(
+      server.id,
+      `${validate ? "Updating/validating" : "Updating"} app ${STEAM_APP_ID} into ${server.install}`,
+      "system"
+    );
+    let result = await spawnSteamCmdUpdate(server, steamcmdExe, { validate, timeoutMs });
+    let hit06 = /state is 0x6/i.test(result.output || "");
 
     if (hit06 && !repair) {
       appendConsoleLog(server.id, "Detected SteamCMD 0x6 — clearing stuck manifest and retrying once…", "system");
       await clearStuckSteamState(server);
-      result = await spawnSteamCmdUpdate(server, steamcmdExe);
-      hit06 = /state is 0x6/i.test(result.output);
+      result = await spawnSteamCmdUpdate(server, steamcmdExe, { validate, timeoutMs });
+      hit06 = /state is 0x6/i.test(result.output || "");
     }
 
-    if (hit06) {
+    if (result.timedOut) {
+      appendConsoleLog(server.id, "Update timed out before SteamCMD finished.", "error");
+      addActivity(`Update timed out for ${server.profile}`, "error");
+    } else if (hit06) {
       runtime.needsRepair = true;
       appendConsoleLog(
         server.id,
@@ -2733,7 +2774,7 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
         "error"
       );
       addActivity(`Update hit 0x6 for ${server.profile} — repair recommended`, "error");
-    } else if (result.code === 0) {
+    } else if (steamCmdLooksSuccessful(result)) {
       const exe = await resolveExePath(server);
       if (await pathExists(exe)) {
         server.exe = exe;
@@ -2756,11 +2797,12 @@ async function runSteamUpdate(server, { onComplete, repair = false } = {}) {
     }
 
     await refreshRuntime(server, { deep: true });
-    payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code };
-    shouldComplete = typeof onComplete === "function" && !hit06;
+    payload = { ...publicServer(server), needsRepair: Boolean(runtime.needsRepair), updateExitCode: result.code, timedOut: Boolean(result.timedOut) };
+    shouldComplete = typeof onComplete === "function" && !hit06 && !result.timedOut;
   } finally {
     runtime.updating = false;
-    if (runtime.status === "Updating") runtime.status = "stopped";
+    if (String(runtime.status).toLowerCase() === "updating") runtime.status = "stopped";
+    processCache.at = 0;
   }
   if (shouldComplete) {
     try { await onComplete(); } catch (err) { addActivity(err.message, "error"); }
@@ -3036,18 +3078,23 @@ async function automationTick() {
           }
           if (server.performUpdate) {
             try {
-              await runSteamUpdate(server);
+              // Scheduled checks skip validate so SteamCMD can finish in time for restart.
+              await runSteamUpdate(server, { validate: false, timeoutMs: 25 * 60 * 1000 });
             } catch (err) {
               addActivity(`Scheduled update failed for ${server.profile}: ${err.message}`, "error");
             }
           }
           if (server.thenRestart) {
             try {
-              await delay(2000);
+              runtime.updating = false;
+              if (String(runtime.status).toLowerCase() === "updating") runtime.status = "stopped";
+              await waitForProcessGone(server, 30000);
+              await delay(3000);
               await startServer(server);
               addActivity(`Scheduled restart started ${server.profile}`, "success");
             } catch (err) {
               addActivity(`Scheduled restart failed for ${server.profile}: ${err.message}`, "error");
+              appendConsoleLog(server.id, `Scheduled restart failed: ${err.message}`, "error");
             }
           }
         }
