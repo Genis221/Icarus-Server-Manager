@@ -3164,12 +3164,13 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "POST" && pathname === "/api/manager/restart") {
-    const helper = path.join(ROOT, "RestartIcarusManager.cmd");
+    const helperCmd = path.join(ROOT, "RestartIcarusManager.cmd");
+    const helperVbs = path.join(ROOT, "RestartIcarusManager.vbs");
     const script = path.join(ROOT, "StartIcarusManager.ps1");
     if (!(await pathExists(script))) {
       return sendJson(res, 500, { error: "StartIcarusManager.ps1 was not found next to server.mjs" });
     }
-    if (!(await pathExists(helper))) {
+    if (!(await pathExists(helperCmd))) {
       return sendJson(res, 500, { error: "RestartIcarusManager.cmd was not found next to server.mjs" });
     }
     addActivity("Manager restart requested from the browser", "info");
@@ -3177,35 +3178,48 @@ async function handleApi(req, res, url) {
       ok: true,
       message: "Pulling updates and restarting the manager. This page will reconnect shortly."
     });
-    // Start-Process creates a process tree that survives when this node process exits.
-    setTimeout(() => {
+
+    const logRestart = async line => {
       try {
-        const q = value => String(value).replace(/'/g, "''");
-        const command = [
-          `$p = Start-Process -FilePath '${q(helper)}'`,
-          `-ArgumentList @('${q(PORT)}','${q(HOST || "0.0.0.0")}')`,
-          `-WorkingDirectory '${q(ROOT)}'`,
-          `-WindowStyle Minimized`,
-          `-PassThru`,
-          "; if (-not $p) { exit 1 }"
-        ].join(" ");
-        const child = spawn(
-          "powershell.exe",
-          ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-          {
+        await mkdir(DATA_DIR, { recursive: true });
+        await writeFile(path.join(DATA_DIR, "restart.log"), `${new Date().toISOString()} ${line}\n`, { flag: "a" });
+      } catch { /* ignore */ }
+    };
+
+    // wscript.Run(..., False) creates a process outside node's job object so it
+    // survives process.exit. Fall back to cmd start if the .vbs is missing.
+    setTimeout(async () => {
+      try {
+        await logRestart(`api scheduling relaunch port=${PORT} host=${HOST || "0.0.0.0"}`);
+        let child;
+        if (await pathExists(helperVbs)) {
+          child = spawn(
+            path.join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe"),
+            ["//B", "//Nologo", helperVbs, String(PORT), String(HOST || "0.0.0.0")],
+            { cwd: ROOT, detached: true, stdio: "ignore", windowsHide: true, shell: false }
+          );
+        } else {
+          const cmdline = `start "" /min "${helperCmd}" ${PORT} "${HOST || "0.0.0.0"}"`;
+          child = spawn(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", cmdline], {
             cwd: ROOT,
             detached: true,
             stdio: "ignore",
             windowsHide: true,
             shell: false
-          }
-        );
+          });
+        }
+        child.on("error", err => {
+          logRestart(`spawn error: ${err.message}`);
+          console.error("[manager restart]", err);
+        });
         child.unref();
+        await logRestart(`spawned relaunch pid=${child.pid || "?"}`);
       } catch (err) {
+        await logRestart(`schedule failed: ${err.message}`);
         console.error("[manager restart]", err);
       }
-      setTimeout(() => process.exit(0), 800);
-    }, 300);
+      setTimeout(() => process.exit(0), 1200);
+    }, 400);
     return;
   }
 
