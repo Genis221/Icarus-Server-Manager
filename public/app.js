@@ -787,19 +787,23 @@ async function maybePromptRepair(server) {
   await refreshState({ silent: true });
 }
 
-async function confirmDanger(title, message) {
+async function confirmDanger(title, message, okLabel = "Delete") {
   return new Promise(resolve => {
     document.getElementById("confirm-title").textContent = title;
     document.getElementById("confirm-message").textContent = message;
+    const okBtn = document.getElementById("confirm-ok");
+    const previousLabel = okBtn.textContent;
+    okBtn.textContent = okLabel;
     confirmDialog.showModal();
     const onOk = () => { cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
     function cleanup() {
       confirmDialog.close();
-      document.getElementById("confirm-ok").removeEventListener("click", onOk);
+      okBtn.textContent = previousLabel;
+      okBtn.removeEventListener("click", onOk);
       document.getElementById("confirm-cancel").removeEventListener("click", onCancel);
     }
-    document.getElementById("confirm-ok").addEventListener("click", onOk);
+    okBtn.addEventListener("click", onOk);
     document.getElementById("confirm-cancel").addEventListener("click", onCancel);
   });
 }
@@ -1119,6 +1123,48 @@ document.getElementById("btn-info").addEventListener("click", () => {
       : "Listening on all interfaces (0.0.0.0). Forward TCP 3230 for the panel, and UDP game + query ports for Icarus.";
   }
   infoDialog.showModal();
+});
+
+async function waitForManagerBack(timeoutMs = 120000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      const res = await fetch("/api/state", { cache: "no-store" });
+      if (res.ok) return true;
+    } catch { /* still down */ }
+  }
+  return false;
+}
+
+document.getElementById("btn-restart-manager").addEventListener("click", async () => {
+  const ok = await confirmDanger(
+    "Restart Icarus Manager",
+    "This closes the manager panel process, pulls the latest code from GitHub (same as Start Icarus Manager.cmd), then starts it again. Your Icarus game server is left running. Continue?",
+    "Restart"
+  );
+  if (!ok) return;
+  const btn = document.getElementById("btn-restart-manager");
+  if (btn) btn.disabled = true;
+  toast("Restarting manager — pulling updates, then coming back…", "info");
+  try {
+    await api("/api/manager/restart", { method: "POST", body: {} });
+  } catch (err) {
+    // Expected once the process exits mid-request; keep waiting for it to return.
+    if (!/failed to fetch|networkerror|load failed|fetch/i.test(String(err.message || err))) {
+      if (btn) btn.disabled = false;
+      toast(err.message, "error");
+      return;
+    }
+  }
+  const back = await waitForManagerBack();
+  if (btn) btn.disabled = false;
+  if (back) {
+    toast("Manager is back — reloading", "success");
+    location.reload();
+    return;
+  }
+  toast("Manager has not come back yet. Check the server console, then refresh this page.", "error");
 });
 document.getElementById("btn-copy-settings").addEventListener("click", () => {
   if (state.servers.length < 2) {

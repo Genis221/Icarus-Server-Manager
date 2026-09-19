@@ -3163,6 +3163,45 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await publicStateAsync());
   }
 
+  if (method === "POST" && pathname === "/api/manager/restart") {
+    const script = path.join(ROOT, "StartIcarusManager.ps1");
+    if (!(await pathExists(script))) {
+      return sendJson(res, 500, { error: "StartIcarusManager.ps1 was not found next to server.mjs" });
+    }
+    addActivity("Manager restart requested from the browser", "info");
+    sendJson(res, 200, {
+      ok: true,
+      message: "Pulling updates and restarting the manager. This page will reconnect shortly."
+    });
+    setTimeout(() => {
+      try {
+        const child = spawn(
+          "powershell.exe",
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", script,
+            "-Port", String(PORT),
+            "-HostAddress", String(HOST || "0.0.0.0"),
+            "-NoBrowser"
+          ],
+          {
+            cwd: ROOT,
+            detached: true,
+            stdio: "ignore",
+            windowsHide: false
+          }
+        );
+        child.unref();
+      } catch (err) {
+        console.error("[manager restart]", err);
+      }
+      setTimeout(() => process.exit(0), 400);
+    }, 250);
+    return;
+  }
+
   if (method === "POST" && pathname === "/api/servers") {
     const body = (await readBody(req)) || {};
     const server = makeServer({
