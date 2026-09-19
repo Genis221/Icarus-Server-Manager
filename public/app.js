@@ -1107,7 +1107,12 @@ function applyTheme(theme) {
   document.documentElement.dataset.theme = value;
   localStorage.setItem("icarus-theme", value);
   const btn = document.getElementById("btn-theme");
-  if (btn) btn.textContent = value === "light" ? "Dark" : "Light";
+  if (btn) {
+    const nextLabel = value === "light" ? "Change to Dark mode" : "Change to Light mode";
+    btn.textContent = nextLabel;
+    btn.title = nextLabel;
+    btn.setAttribute("aria-label", nextLabel);
+  }
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = value === "light" ? "#eef2f4" : "#07090d";
 }
@@ -1139,9 +1144,9 @@ async function waitForManagerBack(timeoutMs = 120000) {
 
 document.getElementById("btn-restart-manager").addEventListener("click", async () => {
   const ok = await confirmDanger(
-    "Restart to check for updates for Icarus Server Manager",
-    "This closes the manager panel process, pulls the latest code from GitHub (same as Start Icarus Manager.cmd), then starts it again. Your Icarus game server is left running. Continue?",
-    "Check for updates"
+    "Restart Server Manager",
+    "This restarts Icarus Server Manager and checks GitHub for updates (same as Start Icarus Manager.cmd). Your Icarus game server is left running. Continue?",
+    "Restart"
   );
   if (!ok) return;
   const btn = document.getElementById("btn-restart-manager");
