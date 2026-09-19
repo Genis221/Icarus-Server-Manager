@@ -39,6 +39,24 @@
             <button type="button" class="tool-btn ghost" id="btn-info" title="About Icarus Server Manager">About</button>
           </div>
         </div>
+        <section class="host-meters" id="host-meters" aria-label="This PC resources">
+          <p class="host-meters-kicker">This PC</p>
+          <div class="host-meter" data-meter="cpu">
+            <div class="host-meter-head">
+              <span>CPU</span>
+              <strong id="host-cpu-label">—</strong>
+            </div>
+            <div class="host-meter-track"><i id="host-cpu-bar" style="width:0%"></i></div>
+          </div>
+          <div class="host-meter" data-meter="ram">
+            <div class="host-meter-head">
+              <span>RAM</span>
+              <strong id="host-ram-label">—</strong>
+            </div>
+            <div class="host-meter-track"><i id="host-ram-bar" style="width:0%"></i></div>
+            <small id="host-ram-detail" class="host-meter-detail">—</small>
+          </div>
+        </section>
         <div class="rail-head">
           <span>Fleet</span>
           <div class="rail-head-actions">

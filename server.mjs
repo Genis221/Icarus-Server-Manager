@@ -700,14 +700,7 @@ async function publicStateAsync() {
     return publicServer(server, await getRconPublic(server));
   }));
   return {
-    host: {
-      managerPort: PORT,
-      bindHost: HOST,
-      hostname: os.hostname(),
-      lanAddresses: lanAddresses(),
-      platform: process.platform,
-      node: process.version
-    },
+    host: hostPublic(),
     servers,
     activity: state.activity.slice(0, 40)
   };
@@ -716,14 +709,7 @@ async function publicStateAsync() {
 function publicState() {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   return {
-    host: {
-      managerPort: PORT,
-      bindHost: HOST,
-      hostname: os.hostname(),
-      lanAddresses: lanAddresses(),
-      platform: process.platform,
-      node: process.version
-    },
+    host: hostPublic(),
     servers: ordered.map(server => publicServer(server, server._rconPublic || null)),
     activity: state.activity.slice(0, 40)
   };
@@ -750,6 +736,58 @@ function formatBytes(bytes) {
     if (value < 1024) break;
   }
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+}
+
+let hostCpuSample = null;
+let cachedHostResources = null;
+
+function readCpuTimes() {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of os.cpus()) {
+    const t = cpu.times;
+    idle += t.idle;
+    total += t.user + t.nice + t.sys + t.idle + t.irq;
+  }
+  return { idle, total };
+}
+
+function refreshHostResources() {
+  const totalMem = os.totalmem();
+  const freeMem = os.freemem();
+  const usedMem = Math.max(0, totalMem - freeMem);
+  const now = readCpuTimes();
+  let cpuPercent = cachedHostResources?.cpuPercent ?? null;
+  if (hostCpuSample && now.total > hostCpuSample.total) {
+    const idleDelta = now.idle - hostCpuSample.idle;
+    const totalDelta = now.total - hostCpuSample.total;
+    cpuPercent = Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 1000) / 10));
+  }
+  hostCpuSample = now;
+  cachedHostResources = {
+    cpuPercent,
+    cpuCores: os.cpus().length,
+    ramTotalBytes: totalMem,
+    ramUsedBytes: usedMem,
+    ramFreeBytes: freeMem,
+    ramUsedPercent: totalMem ? Math.round((usedMem / totalMem) * 1000) / 10 : 0,
+    ramTotalLabel: formatBytes(totalMem),
+    ramUsedLabel: formatBytes(usedMem),
+    ramFreeLabel: formatBytes(freeMem)
+  };
+  return cachedHostResources;
+}
+
+function hostPublic() {
+  return {
+    managerPort: PORT,
+    bindHost: HOST,
+    hostname: os.hostname(),
+    lanAddresses: lanAddresses(),
+    platform: process.platform,
+    node: process.version,
+    resources: cachedHostResources || refreshHostResources()
+  };
 }
 
 function isPathInside(parent, child) {
@@ -3562,6 +3600,10 @@ async function main() {
   for (const server of state.servers) runtimeOf(server.id);
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });
+  refreshHostResources();
+  setInterval(() => {
+    try { refreshHostResources(); } catch { /* ignore */ }
+  }, 2000);
 
   setInterval(() => {
     scheduleRuntimeRefresh({ deep: true });

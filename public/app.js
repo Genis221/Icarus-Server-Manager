@@ -632,6 +632,47 @@ function fromTimeInput(value) {
   return String(value || "09:00").slice(0, 5);
 }
 
+function meterLevel(percent) {
+  const n = Number(percent);
+  if (!Number.isFinite(n)) return "";
+  if (n >= 90) return "hot";
+  if (n >= 75) return "warn";
+  return "";
+}
+
+function updateHostMeters(resources) {
+  const cpuLabel = document.getElementById("host-cpu-label");
+  const cpuBar = document.getElementById("host-cpu-bar");
+  const ramLabel = document.getElementById("host-ram-label");
+  const ramBar = document.getElementById("host-ram-bar");
+  const ramDetail = document.getElementById("host-ram-detail");
+  const cpuMeter = document.querySelector('.host-meter[data-meter="cpu"]');
+  const ramMeter = document.querySelector('.host-meter[data-meter="ram"]');
+  if (!cpuLabel || !resources) return;
+
+  const cpu = resources.cpuPercent;
+  if (cpu == null || !Number.isFinite(Number(cpu))) {
+    cpuLabel.textContent = "…";
+    if (cpuBar) cpuBar.style.width = "0%";
+    if (cpuMeter) cpuMeter.dataset.level = "";
+  } else {
+    const pct = Math.max(0, Math.min(100, Number(cpu)));
+    cpuLabel.textContent = `${pct.toFixed(pct >= 10 ? 0 : 1)}% · ${resources.cpuCores || "?"}c`;
+    if (cpuBar) cpuBar.style.width = `${pct}%`;
+    if (cpuMeter) cpuMeter.dataset.level = meterLevel(pct);
+  }
+
+  const ramPct = Number(resources.ramUsedPercent);
+  if (Number.isFinite(ramPct)) {
+    ramLabel.textContent = `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}%`;
+    if (ramBar) ramBar.style.width = `${Math.max(0, Math.min(100, ramPct))}%`;
+    if (ramMeter) ramMeter.dataset.level = meterLevel(ramPct);
+  }
+  if (ramDetail) {
+    ramDetail.textContent = `${resources.ramUsedLabel || "—"} used · ${resources.ramFreeLabel || "—"} free · ${resources.ramTotalLabel || "—"} total`;
+  }
+}
+
 function render() {
   renderTabs();
   renderServer(activeServer());
@@ -652,6 +693,7 @@ async function refreshState({ silent = false } = {}) {
     state.servers = data.servers || [];
     state.activity = data.activity || [];
     window.__icarusHost = data.host || null;
+    updateHostMeters(data.host?.resources);
     if (!state.servers.find(s => s.id === state.activeId)) {
       state.activeId = state.servers[0]?.id || null;
     }
