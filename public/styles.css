@@ -89,7 +89,7 @@ button { cursor: pointer; }
 
 .rail {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 12px;
   padding: 18px 14px;
   background: color-mix(in srgb, var(--rail) 88%, transparent);
@@ -198,10 +198,13 @@ button { cursor: pointer; }
   font-size: 20px;
   font-weight: 700;
 }
-.rail-foot {
+.rail-tools {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 0 2px 4px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
 }
 .tool-btn {
   border: 1px solid var(--line-strong);
@@ -211,6 +214,13 @@ button { cursor: pointer; }
   padding: 7px 12px;
   font-weight: 600;
   font-size: 12px;
+}
+.tool-btn-wide {
+  flex: 1 1 100%;
+  border-radius: 12px;
+  text-align: center;
+  line-height: 1.25;
+  white-space: normal;
 }
 .tool-btn:hover, .tool-btn.ghost:hover {
   border-color: var(--accent);

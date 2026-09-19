@@ -1139,9 +1139,9 @@ async function waitForManagerBack(timeoutMs = 120000) {
 
 document.getElementById("btn-restart-manager").addEventListener("click", async () => {
   const ok = await confirmDanger(
-    "Restart Icarus Manager",
+    "Restart to check for updates for Icarus Server Manager",
     "This closes the manager panel process, pulls the latest code from GitHub (same as Start Icarus Manager.cmd), then starts it again. Your Icarus game server is left running. Continue?",
-    "Restart"
+    "Check for updates"
   );
   if (!ok) return;
   const btn = document.getElementById("btn-restart-manager");
