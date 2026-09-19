@@ -740,6 +740,8 @@ function formatBytes(bytes) {
 
 let hostCpuSample = null;
 let cachedHostResources = null;
+let cachedRamSpeedMHz = null;
+let ramSpeedProbe = null;
 
 function readCpuTimes() {
   let idle = 0;
@@ -752,7 +754,62 @@ function readCpuTimes() {
   return { idle, total };
 }
 
+function cpuClockInfo() {
+  const list = os.cpus() || [];
+  if (!list.length) {
+    return { model: "", speedMHz: null, speedGHzLabel: "", cores: 0 };
+  }
+  let maxMHz = 0;
+  let sumMHz = 0;
+  let counted = 0;
+  for (const cpu of list) {
+    const mhz = Number(cpu.speed) || 0;
+    if (mhz > 0) {
+      maxMHz = Math.max(maxMHz, mhz);
+      sumMHz += mhz;
+      counted += 1;
+    }
+  }
+  const speedMHz = maxMHz || (counted ? Math.round(sumMHz / counted) : null);
+  const speedGHzLabel = speedMHz
+    ? `${(speedMHz / 1000).toFixed(speedMHz >= 1000 ? 2 : 1)} GHz`
+    : "";
+  return {
+    model: String(list[0].model || "").replace(/\s+/g, " ").trim(),
+    speedMHz,
+    speedGHzLabel,
+    cores: list.length
+  };
+}
+
+async function probeRamSpeedMHz() {
+  if (process.platform !== "win32") return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue | Measure-Object -Property Speed -Maximum).Maximum"
+      ],
+      { windowsHide: true, timeout: 8000 }
+    );
+    const mhz = Number(String(stdout || "").trim());
+    return Number.isFinite(mhz) && mhz > 0 ? Math.round(mhz) : null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureRamSpeedProbe() {
+  if (ramSpeedProbe || process.platform !== "win32") return;
+  ramSpeedProbe = probeRamSpeedMHz()
+    .then(mhz => { cachedRamSpeedMHz = mhz; })
+    .catch(() => { cachedRamSpeedMHz = null; });
+}
+
 function refreshHostResources() {
+  ensureRamSpeedProbe();
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   const usedMem = Math.max(0, totalMem - freeMem);
@@ -764,16 +821,23 @@ function refreshHostResources() {
     cpuPercent = Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 1000) / 10));
   }
   hostCpuSample = now;
+  const clock = cpuClockInfo();
+  const ramSpeedLabel = cachedRamSpeedMHz ? `${cachedRamSpeedMHz} MHz` : "";
   cachedHostResources = {
     cpuPercent,
-    cpuCores: os.cpus().length,
+    cpuCores: clock.cores,
+    cpuModel: clock.model,
+    cpuSpeedMHz: clock.speedMHz,
+    cpuSpeedGHzLabel: clock.speedGHzLabel,
     ramTotalBytes: totalMem,
     ramUsedBytes: usedMem,
     ramFreeBytes: freeMem,
     ramUsedPercent: totalMem ? Math.round((usedMem / totalMem) * 1000) / 10 : 0,
     ramTotalLabel: formatBytes(totalMem),
     ramUsedLabel: formatBytes(usedMem),
-    ramFreeLabel: formatBytes(freeMem)
+    ramFreeLabel: formatBytes(freeMem),
+    ramSpeedMHz: cachedRamSpeedMHz,
+    ramSpeedLabel
   };
   return cachedHostResources;
 }

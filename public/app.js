@@ -643,6 +643,7 @@ function meterLevel(percent) {
 function updateHostMeters(resources) {
   const cpuLabel = document.getElementById("host-cpu-label");
   const cpuBar = document.getElementById("host-cpu-bar");
+  const cpuDetail = document.getElementById("host-cpu-detail");
   const ramLabel = document.getElementById("host-ram-label");
   const ramBar = document.getElementById("host-ram-bar");
   const ramDetail = document.getElementById("host-ram-detail");
@@ -650,26 +651,42 @@ function updateHostMeters(resources) {
   const ramMeter = document.querySelector('.host-meter[data-meter="ram"]');
   if (!cpuLabel || !resources) return;
 
+  const ghz = resources.cpuSpeedGHzLabel || "";
+  const cores = resources.cpuCores || "?";
   const cpu = resources.cpuPercent;
   if (cpu == null || !Number.isFinite(Number(cpu))) {
-    cpuLabel.textContent = "…";
+    cpuLabel.textContent = ghz ? `… · ${cores}c · ${ghz}` : "…";
     if (cpuBar) cpuBar.style.width = "0%";
     if (cpuMeter) cpuMeter.dataset.level = "";
   } else {
     const pct = Math.max(0, Math.min(100, Number(cpu)));
-    cpuLabel.textContent = `${pct.toFixed(pct >= 10 ? 0 : 1)}% · ${resources.cpuCores || "?"}c`;
+    cpuLabel.textContent = ghz
+      ? `${pct.toFixed(pct >= 10 ? 0 : 1)}% · ${cores}c · ${ghz}`
+      : `${pct.toFixed(pct >= 10 ? 0 : 1)}% · ${cores}c`;
     if (cpuBar) cpuBar.style.width = `${pct}%`;
     if (cpuMeter) cpuMeter.dataset.level = meterLevel(pct);
   }
+  if (cpuDetail) {
+    cpuDetail.textContent = resources.cpuModel || (ghz ? `${ghz} CPU` : "CPU");
+  }
 
   const ramPct = Number(resources.ramUsedPercent);
+  const ramSpeed = resources.ramSpeedLabel || "";
   if (Number.isFinite(ramPct)) {
-    ramLabel.textContent = `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}%`;
+    ramLabel.textContent = ramSpeed
+      ? `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}% · ${ramSpeed}`
+      : `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}%`;
     if (ramBar) ramBar.style.width = `${Math.max(0, Math.min(100, ramPct))}%`;
     if (ramMeter) ramMeter.dataset.level = meterLevel(ramPct);
   }
   if (ramDetail) {
-    ramDetail.textContent = `${resources.ramUsedLabel || "—"} used · ${resources.ramFreeLabel || "—"} free · ${resources.ramTotalLabel || "—"} total`;
+    const parts = [
+      `${resources.ramUsedLabel || "—"} used`,
+      `${resources.ramFreeLabel || "—"} free`,
+      `${resources.ramTotalLabel || "—"} total`
+    ];
+    if (ramSpeed) parts.push(ramSpeed);
+    ramDetail.textContent = parts.join(" · ");
   }
 }
 
