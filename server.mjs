@@ -3164,41 +3164,48 @@ async function handleApi(req, res, url) {
   }
 
   if (method === "POST" && pathname === "/api/manager/restart") {
+    const helper = path.join(ROOT, "RestartIcarusManager.cmd");
     const script = path.join(ROOT, "StartIcarusManager.ps1");
     if (!(await pathExists(script))) {
       return sendJson(res, 500, { error: "StartIcarusManager.ps1 was not found next to server.mjs" });
+    }
+    if (!(await pathExists(helper))) {
+      return sendJson(res, 500, { error: "RestartIcarusManager.cmd was not found next to server.mjs" });
     }
     addActivity("Manager restart requested from the browser", "info");
     sendJson(res, 200, {
       ok: true,
       message: "Pulling updates and restarting the manager. This page will reconnect shortly."
     });
+    // Start-Process creates a process tree that survives when this node process exits.
     setTimeout(() => {
       try {
+        const q = value => String(value).replace(/'/g, "''");
+        const command = [
+          `$p = Start-Process -FilePath '${q(helper)}'`,
+          `-ArgumentList @('${q(PORT)}','${q(HOST || "0.0.0.0")}')`,
+          `-WorkingDirectory '${q(ROOT)}'`,
+          `-WindowStyle Minimized`,
+          `-PassThru`,
+          "; if (-not $p) { exit 1 }"
+        ].join(" ");
         const child = spawn(
           "powershell.exe",
-          [
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", script,
-            "-Port", String(PORT),
-            "-HostAddress", String(HOST || "0.0.0.0"),
-            "-NoBrowser"
-          ],
+          ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
           {
             cwd: ROOT,
             detached: true,
             stdio: "ignore",
-            windowsHide: false
+            windowsHide: true,
+            shell: false
           }
         );
         child.unref();
       } catch (err) {
         console.error("[manager restart]", err);
       }
-      setTimeout(() => process.exit(0), 400);
-    }, 250);
+      setTimeout(() => process.exit(0), 800);
+    }, 300);
     return;
   }
 
