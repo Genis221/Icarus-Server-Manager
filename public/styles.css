@@ -16,6 +16,7 @@
   --red: #fb7185;
   --red-dim: rgba(251, 113, 133, 0.14);
   --warn: #fbbf24;
+  --warn-dim: rgba(251, 191, 36, 0.18);
   --radius: 18px;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
   --font: "Outfit", "Segoe UI", sans-serif;
@@ -49,6 +50,7 @@
   --red: #d4485c;
   --red-dim: rgba(212, 72, 92, 0.12);
   --warn: #c48412;
+  --warn-dim: rgba(196, 132, 18, 0.16);
   --shadow: 0 18px 40px rgba(20, 40, 50, 0.1);
   --input-bg: #ffffff;
   --stat-bg: #f4f8f9;
@@ -163,9 +165,32 @@ button { cursor: pointer; }
   border-radius: 50%;
   background: var(--red);
   box-shadow: 0 0 0 3px var(--red-dim);
+  flex-shrink: 0;
 }
-.tab.running::before { background: var(--green); box-shadow: 0 0 0 3px var(--green-dim); }
-.tab.starting::before { background: var(--warn); }
+.tab.stopped {
+  border-color: rgba(251, 113, 133, 0.45);
+  box-shadow: 0 0 0 1px var(--red-dim);
+}
+.tab.stopped::before {
+  background: var(--red);
+  box-shadow: 0 0 0 3px var(--red-dim);
+}
+.tab.running {
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 0 1px var(--green-dim);
+}
+.tab.running::before {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-dim);
+}
+.tab.starting {
+  border-color: rgba(251, 191, 36, 0.5);
+  box-shadow: 0 0 0 1px var(--warn-dim);
+}
+.tab.starting::before {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-dim);
+}
 .tab-copy { display: grid; gap: 2px; min-width: 0; }
 .tab-copy b {
   font-size: 13px;
@@ -178,8 +203,14 @@ button { cursor: pointer; }
 .tab-copy small { color: var(--muted); font-size: 11px; }
 .tab.active {
   background: var(--panel-solid);
-  border-color: rgba(45, 212, 191, 0.28);
-  box-shadow: 0 0 0 3px var(--teal-soft);
+  border-color: rgba(255, 176, 122, 0.7);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.tab.active.stopped::before,
+.tab.active.running::before,
+.tab.active.starting::before {
+  /* Keep status color on the dot even when the selected tab outline is gold */
+  opacity: 1;
 }
 .tab .close {
   border: 0;

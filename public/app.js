@@ -104,8 +104,8 @@ function schedulePatch(id, patch) {
 function statusClass(server) {
   const status = String(server.status || "").toLowerCase();
   const availability = String(server.availability || "").toLowerCase();
-  if (status === "updating" || availability.includes("start")) return "starting";
-  if (status === "running") return "running";
+  if (status === "updating" || availability.includes("start") || status.includes("start")) return "starting";
+  if (status === "running" || availability === "online") return "running";
   return "stopped";
 }
 
