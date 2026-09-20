@@ -156,7 +156,11 @@ async function loadState() {
     const raw = await readFile(STATE_FILE, "utf8");
     const parsed = JSON.parse(raw);
     const servers = Array.isArray(parsed.servers) ? parsed.servers.map((s, i) => makeServer({ ...s, order: s.order ?? i })) : [];
-    state = { servers, activity: Array.isArray(parsed.activity) ? parsed.activity.slice(0, 100) : [] };
+    state = {
+      servers,
+      activity: Array.isArray(parsed.activity) ? parsed.activity.slice(0, 100) : [],
+      managerStartWithWindows: parsed.managerStartWithWindows !== false
+    };
     loadedFromState = true;
   } catch {
     // fall through to legacy import
@@ -177,7 +181,8 @@ async function loadState() {
       if (servers.length) {
         state = {
           servers,
-          activity: [{ time: nowIso(), message: "Imported desktop config.json", level: "info" }]
+          activity: [{ time: nowIso(), message: "Imported desktop config.json", level: "info" }],
+          managerStartWithWindows: true
         };
         await persistState(true);
         return;
@@ -188,8 +193,11 @@ async function loadState() {
   }
 
   if (!loadedFromState) {
-    state = { servers: [makeServer()], activity: [] };
+    state = { servers: [makeServer()], activity: [], managerStartWithWindows: true };
     await persistState(true);
+  }
+  if (typeof state.managerStartWithWindows !== "boolean") {
+    state.managerStartWithWindows = true;
   }
 }
 
@@ -204,7 +212,11 @@ async function persistState(force) {
     saveTimer = null;
   }
   await ensureDataDir();
-  const payload = JSON.stringify({ servers: state.servers, activity: state.activity.slice(0, 100) }, null, 2);
+  const payload = JSON.stringify({
+    servers: state.servers,
+    activity: state.activity.slice(0, 100),
+    managerStartWithWindows: state.managerStartWithWindows !== false
+  }, null, 2);
   await writeFile(STATE_FILE, payload, "utf8");
 }
 
@@ -842,6 +854,52 @@ function refreshHostResources() {
   return cachedHostResources;
 }
 
+function windowsStartupLauncherPath() {
+  const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Icarus Server Manager.cmd");
+}
+
+async function isManagerStartupEnabled() {
+  if (process.platform !== "win32") return false;
+  return pathExists(windowsStartupLauncherPath());
+}
+
+async function setManagerStartupEnabled(enabled) {
+  if (process.platform !== "win32") {
+    throw Object.assign(new Error("Start with Windows is only available on Windows"), { status: 400 });
+  }
+  const dest = windowsStartupLauncherPath();
+  if (!enabled) {
+    await rm(dest, { force: true });
+    return false;
+  }
+  const script = path.join(ROOT, "StartIcarusManager.ps1");
+  if (!(await pathExists(script))) {
+    throw Object.assign(new Error("StartIcarusManager.ps1 was not found"), { status: 500 });
+  }
+  await mkdir(path.dirname(dest), { recursive: true });
+  const body = [
+    "@echo off",
+    "rem Starts Icarus Server Manager when Windows signs in.",
+    `powershell -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${script}" -Port ${PORT} -HostAddress "${HOST || "0.0.0.0"}" -NoBrowser`,
+    ""
+  ].join("\r\n");
+  await writeFile(dest, body, "utf8");
+  return true;
+}
+
+async function syncManagerWindowsStartup() {
+  if (process.platform !== "win32") return false;
+  const want = state.managerStartWithWindows !== false;
+  try {
+    const enabled = await setManagerStartupEnabled(want);
+    return enabled;
+  } catch (err) {
+    console.warn(`[startup] Could not ${want ? "enable" : "disable"} Start with Windows: ${err.message}`);
+    return false;
+  }
+}
+
 function hostPublic() {
   return {
     managerPort: PORT,
@@ -850,6 +908,7 @@ function hostPublic() {
     lanAddresses: lanAddresses(),
     platform: process.platform,
     node: process.version,
+    startWithWindows: state.managerStartWithWindows !== false,
     resources: cachedHostResources || refreshHostResources()
   };
 }
@@ -3265,6 +3324,32 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await publicStateAsync());
   }
 
+  if (method === "POST" && pathname === "/api/manager/startup") {
+    if (process.platform !== "win32") {
+      return sendJson(res, 400, { error: "Start with Windows is only available on Windows" });
+    }
+    const body = (await readBody(req)) || {};
+    const enabled = body.enabled !== false && body.enabled !== 0 && body.enabled !== "false";
+    state.managerStartWithWindows = Boolean(enabled);
+    scheduleSave();
+    try {
+      await setManagerStartupEnabled(state.managerStartWithWindows);
+    } catch (err) {
+      return sendJson(res, err.status || 500, { error: err.message });
+    }
+    addActivity(
+      state.managerStartWithWindows
+        ? "Icarus Manager will start with Windows"
+        : "Icarus Manager will no longer start with Windows",
+      "info"
+    );
+    return sendJson(res, 200, {
+      ok: true,
+      enabled: state.managerStartWithWindows,
+      path: windowsStartupLauncherPath()
+    });
+  }
+
   if (method === "POST" && pathname === "/api/manager/restart") {
     const helperCmd = path.join(ROOT, "RestartIcarusManager.cmd");
     const helperVbs = path.join(ROOT, "RestartIcarusManager.vbs");
@@ -3665,6 +3750,7 @@ async function main() {
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });
   refreshHostResources();
+  await syncManagerWindowsStartup();
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
   }, 2000);
