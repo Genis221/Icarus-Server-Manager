@@ -298,28 +298,32 @@ button { cursor: pointer; }
   font-variant-numeric: tabular-nums;
 }
 .host-meter-track {
-  height: 6px;
+  height: 8px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   overflow: hidden;
 }
 html[data-theme="light"] .host-meter-track {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.08);
+  border-color: rgba(15, 40, 48, 0.12);
 }
 .host-meter-track i {
   display: block;
   height: 100%;
   width: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent-2), #5eead4);
-  transition: width 0.45s ease, background 0.3s ease;
+  background: linear-gradient(90deg, #2dd4bf, #99f6e4);
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.45);
+  transition: width 0.45s ease, background 0.3s ease, box-shadow 0.3s ease;
 }
 .host-meter[data-level="warn"] .host-meter-track i {
-  background: linear-gradient(90deg, #fbbf24, #f59e0b);
+  background: linear-gradient(90deg, #fcd34d, #fbbf24);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
 }
 .host-meter[data-level="hot"] .host-meter-track i {
-  background: linear-gradient(90deg, #fb7185, var(--red));
+  background: linear-gradient(90deg, #fda4af, #fb7185);
+  box-shadow: 0 0 10px rgba(251, 113, 133, 0.4);
 }
 .host-meter-detail {
   color: var(--muted);
