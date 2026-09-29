@@ -2,12 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#07090d" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Icarus Manager" />
+    <meta name="application-name" content="Icarus Manager" />
+    <meta name="description" content="Control panel for Icarus dedicated servers." />
     <title>Icarus Server Manager</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icarus-icon.ico" sizes="any" />
     <link rel="icon" href="/icarus-icon.png" type="image/png" sizes="128x128" />
-    <link rel="apple-touch-icon" href="/icarus-icon.png" />
+    <link rel="apple-touch-icon" href="/icarus-icon-192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icarus-icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icarus-icon-512.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -38,6 +47,7 @@
             <button type="button" class="tool-btn" id="btn-copy-settings" title="Copy settings between profiles">Copy Server Settings</button>
             <button type="button" class="tool-btn ghost" id="btn-info" title="About Icarus Server Manager">About</button>
           </div>
+          <button type="button" class="tool-btn tool-btn-wide" id="btn-install-app" hidden title="Install Icarus Server Manager on this device">Install app</button>
         </div>
         <section class="host-meters" id="host-meters" aria-label="This PC resources">
           <p class="host-meters-kicker">This PC</p>
@@ -81,7 +91,8 @@
         <p class="modal-kicker">Icarus</p>
         <h2>Server Manager</h2>
         <p>Web control panel for Icarus dedicated servers. It listens on all interfaces so you can reach it from LAN or the internet after you forward TCP 3230 (and UDP game/query ports for Icarus itself).</p>
-        <p class="muted">Web edition v1.0</p>
+        <p class="muted">On Android Chrome, open this panel then use <b>Install app</b> (or the browser menu → Add to Home screen) for a home-screen shortcut.</p>
+        <p class="muted">Web edition v1.0 · PWA</p>
         <div class="modal-actions">
           <button type="button" class="btn secondary" data-close>Close</button>
         </div>

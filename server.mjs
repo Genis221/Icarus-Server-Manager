@@ -54,10 +54,13 @@ const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".png": "image/png",
-  ".jpg": "image/svg+xml",
-  ".jpeg": "image/svg+xml",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
   ".ico": "image/x-icon",
   ".svg": "image/svg+xml"
 };
@@ -3293,9 +3296,25 @@ async function serveStatic(req, res, urlPath) {
   try {
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": mime[ext] || "application/octet-stream", ...corsHeaders() });
+    const headers = {
+      "Content-Type": mime[ext] || "application/octet-stream",
+      ...corsHeaders()
+    };
+    // Keep the service worker fresh so install / updates work on phones.
+    if (rel === "/sw.js" || rel === "/manifest.webmanifest") {
+      headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate";
+    }
+    if (rel === "/sw.js") {
+      headers["Service-Worker-Allowed"] = "/";
+    }
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
+    // Never fall back HTML for worker / manifest — that breaks Android install.
+    if (rel === "/sw.js" || rel === "/manifest.webmanifest") {
+      res.writeHead(404);
+      return res.end("Not found");
+    }
     if (rel !== "/index.html") {
       const index = await readFile(path.join(PUBLIC_DIR, "index.html"));
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...corsHeaders() });

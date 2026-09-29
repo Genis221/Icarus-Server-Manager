@@ -1497,3 +1497,52 @@ workspace.addEventListener("change", event => {
 await refreshState();
 state.busy.clear();
 state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+
+/* Progressive Web App: service worker + Android / Chrome install prompt */
+let deferredInstallPrompt = null;
+
+function isStandaloneApp() {
+  return window.matchMedia("(display-mode: standalone)").matches
+    || window.navigator.standalone === true;
+}
+
+function updateInstallButton() {
+  const btn = document.getElementById("btn-install-app");
+  if (!btn) return;
+  const canInstall = Boolean(deferredInstallPrompt) && !isStandaloneApp();
+  btn.hidden = !canInstall;
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(err => {
+    console.warn("[pwa] service worker registration failed", err);
+  });
+}
+
+window.addEventListener("beforeinstallprompt", event => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  updateInstallButton();
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  updateInstallButton();
+  toast("Icarus Manager installed on this device", "success");
+});
+
+document.getElementById("btn-install-app")?.addEventListener("click", async () => {
+  if (!deferredInstallPrompt) {
+    toast("Use your browser menu → Add to Home Screen / Install app", "info");
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  try {
+    await deferredInstallPrompt.userChoice;
+  } catch { /* ignore */ }
+  deferredInstallPrompt = null;
+  updateInstallButton();
+});
+
+updateInstallButton();
+
