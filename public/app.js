@@ -32,7 +32,9 @@ const state = {
   repairPrompted: new Set(),
   consoleSource: null,
   consoleServerId: null,
-  panel: localStorage.getItem("icarus-panel") === "console" ? "console" : "overview"
+  panel: localStorage.getItem("icarus-panel") === "console" ? "console" : "overview",
+  currentUser: null,
+  signedIn: false
 };
 
 const workspace = document.getElementById("workspace");
@@ -44,6 +46,7 @@ const copyDialog = document.getElementById("copy-dialog");
 const confirmDialog = document.getElementById("confirm-dialog");
 const firewallDialog = document.getElementById("firewall-dialog");
 const repairDialog = document.getElementById("repair-dialog");
+const accountDialog = document.getElementById("account-dialog");
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -61,14 +64,61 @@ function toast(message, type = "info") {
   setTimeout(() => el.remove(), 4500);
 }
 
+function isAdmin() {
+  return state.currentUser?.role === "admin";
+}
+
+function setAuthShell(signedIn) {
+  state.signedIn = Boolean(signedIn);
+  document.body.classList.toggle("auth-locked", !signedIn);
+  const railAuth = document.getElementById("rail-auth");
+  const label = document.getElementById("auth-user-label");
+  if (railAuth) railAuth.hidden = !signedIn;
+  if (label) label.textContent = signedIn && state.currentUser?.username ? state.currentUser.username : "";
+  if (!signedIn) {
+    if (state.consoleSource) {
+      try { state.consoleSource.close(); } catch { /* ignore */ }
+      state.consoleSource = null;
+      state.consoleServerId = null;
+    }
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+  }
+}
+
+function renderLogin(errorMessage = "") {
+  setAuthShell(false);
+  state.currentUser = null;
+  workspace.innerHTML = `<section class="login-screen"><form class="login-card" id="login-form">
+    <img class="brand-mark login-mark" src="/icarus-icon.png" alt="" width="40" height="40" />
+    <p class="brand-kicker">Icarus Server Manager</p>
+    <h1>Sign in</h1>
+    <p>Operators only. Each person should use their own account.</p>
+    ${errorMessage ? `<p class="login-error">${escapeHtml(errorMessage)}</p>` : ""}
+    <label class="field"><span>Username</span><input name="username" autocomplete="username" required maxlength="32" /></label>
+    <label class="field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+    <label class="login-remember"><input name="rememberMe" type="checkbox" /><span>Keep me logged in for 30 days</span></label>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form></section>`;
+  document.querySelector("#login-form")?.elements?.username?.focus();
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (res.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/status") {
+    state.currentUser = null;
+    renderLogin();
+    throw Object.assign(new Error(data.error || "Sign in required."), { status: 401 });
+  }
+  if (!res.ok) throw Object.assign(new Error(data.error || `Request failed (${res.status})`), { status: res.status });
   return data;
 }
 
@@ -707,6 +757,8 @@ function render() {
 async function refreshState({ silent = false } = {}) {
   try {
     const data = await api("/api/state");
+    if (data.user) state.currentUser = data.user;
+    setAuthShell(true);
     const prevFocus = document.activeElement;
     const focusKey = prevFocus?.dataset?.icarus
       ? `${prevFocus.closest("[data-server-id]")?.dataset.serverId}:icarus:${prevFocus.dataset.icarus}`
@@ -755,6 +807,7 @@ async function refreshState({ silent = false } = {}) {
       }
     }
   } catch (err) {
+    if (err.status === 401) return;
     if (!silent) {
       workspace.innerHTML = `<div class="empty-view"><p>Could not reach manager API.<br>${escapeHtml(err.message)}</p></div>`;
     }
@@ -1219,7 +1272,7 @@ async function waitForManagerBack(timeoutMs = 120000) {
   while (Date.now() - started < timeoutMs) {
     await new Promise(r => setTimeout(r, 1500));
     try {
-      const res = await fetch("/api/state", { cache: "no-store" });
+      const res = await fetch("/api/auth/status", { cache: "no-store", credentials: "same-origin" });
       if (res.ok) return true;
     } catch { /* still down */ }
   }
@@ -1494,9 +1547,183 @@ workspace.addEventListener("change", event => {
   if (el?.dataset?.icarus || el?.tagName === "SELECT") applyControlPatch(el);
 });
 
-await refreshState();
+await bootApp();
 state.busy.clear();
-state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+
+async function bootApp() {
+  try {
+    const status = await api("/api/auth/status");
+    if (!status.authenticated) {
+      renderLogin();
+      return;
+    }
+    state.currentUser = status.user;
+    setAuthShell(true);
+    await refreshState();
+    if (!state.pollTimer) {
+      state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+    }
+  } catch (err) {
+    if (err.status === 401) {
+      renderLogin();
+      return;
+    }
+    workspace.innerHTML = `<div class="empty-view"><p>Could not reach manager API.<br>${escapeHtml(err.message)}</p></div>`;
+  }
+}
+
+async function afterSignIn() {
+  setAuthShell(true);
+  await refreshState();
+  if (!state.pollTimer) {
+    state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+  }
+}
+
+async function signOut({ everywhere = false } = {}) {
+  try {
+    await api(everywhere ? "/api/auth/logout-all" : "/api/auth/logout", { method: "POST" });
+  } catch { /* still clear local shell */ }
+  state.currentUser = null;
+  state.servers = [];
+  renderLogin();
+}
+
+async function refreshAccountDialog() {
+  const signedAs = document.getElementById("account-signed-as");
+  if (signedAs) {
+    signedAs.textContent = state.currentUser?.username
+      ? `Signed in as ${state.currentUser.username} (${state.currentUser.role || "operator"})`
+      : "Signed in";
+  }
+  const adminSection = document.getElementById("accounts-admin");
+  const list = document.getElementById("account-list");
+  if (!adminSection || !list) return;
+  if (!isAdmin()) {
+    adminSection.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  adminSection.hidden = false;
+  try {
+    const data = await api("/api/auth/users");
+    const users = data.users || [];
+    list.innerHTML = users.map(user => `
+      <div class="account-row">
+        <div><strong>${escapeHtml(user.username)}</strong><span>${escapeHtml(user.role)}</span></div>
+        ${user.id === state.currentUser?.id
+          ? "<em>You</em>"
+          : `<button type="button" class="btn danger" data-delete-user="${escapeHtml(user.id)}" data-username="${escapeHtml(user.username)}">Remove</button>`}
+      </div>`).join("") || `<p class="field-hint">No accounts found.</p>`;
+  } catch (err) {
+    list.innerHTML = `<p class="field-hint">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+document.getElementById("btn-account")?.addEventListener("click", async () => {
+  await refreshAccountDialog();
+  accountDialog?.showModal();
+});
+
+document.getElementById("btn-logout")?.addEventListener("click", async () => {
+  await signOut();
+});
+
+document.getElementById("btn-logout-all")?.addEventListener("click", async () => {
+  const ok = await confirmDanger(
+    "Log out everywhere",
+    "End every signed-in session for your account on all devices?",
+    "Log out everywhere"
+  );
+  if (!ok) return;
+  accountDialog?.close();
+  await signOut({ everywhere: true });
+});
+
+document.getElementById("account-list")?.addEventListener("click", async event => {
+  const btn = event.target.closest("[data-delete-user]");
+  if (!btn) return;
+  const username = btn.dataset.username || "this account";
+  const ok = await confirmDanger("Remove account", `Delete “${username}”? They will no longer be able to sign in.`, "Remove");
+  if (!ok) return;
+  try {
+    await api(`/api/auth/users/${btn.dataset.deleteUser}`, { method: "DELETE" });
+    toast("Account removed", "success");
+    await refreshAccountDialog();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+document.addEventListener("submit", async event => {
+  if (event.target?.id === "login-form") {
+    event.preventDefault();
+    const form = event.target;
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    try {
+      const result = await api("/api/auth/login", {
+        method: "POST",
+        body: {
+          username: form.elements.username.value.trim(),
+          password: form.elements.password.value,
+          rememberMe: form.elements.rememberMe.checked
+        }
+      });
+      state.currentUser = result.user;
+      toast(result.rememberMe ? "Signed in. This device stays logged in for 30 days." : "Signed in.", "success");
+      await afterSignIn();
+    } catch (err) {
+      renderLogin(err.message || "Could not sign in.");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    return;
+  }
+
+  if (event.target?.id === "change-password-form") {
+    event.preventDefault();
+    const form = event.target;
+    if (form.elements.newPassword.value !== form.elements.confirmPassword.value) {
+      toast("New password and confirmation do not match.", "error");
+      return;
+    }
+    try {
+      await api("/api/auth/change-password", {
+        method: "POST",
+        body: {
+          currentPassword: form.elements.currentPassword.value,
+          newPassword: form.elements.newPassword.value
+        }
+      });
+      form.reset();
+      toast("Password updated.", "success");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    return;
+  }
+
+  if (event.target?.id === "create-user-form") {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      await api("/api/auth/users", {
+        method: "POST",
+        body: {
+          username: form.elements.username.value.trim(),
+          password: form.elements.password.value,
+          role: form.elements.role.value
+        }
+      });
+      form.reset();
+      toast("Account created.", "success");
+      await refreshAccountDialog();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+});
 
 /* Progressive Web App: service worker + Android / Chrome install prompt */
 let deferredInstallPrompt = null;

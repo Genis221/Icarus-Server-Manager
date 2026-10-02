@@ -2,7 +2,8 @@ param(
   [ValidateRange(1024, 65535)]
   [int]$Port = 3230,
   [string]$HostAddress = "0.0.0.0",
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  [switch]$ResetAdmin
 )
 
 $ErrorActionPreference = "Continue"
@@ -306,6 +307,11 @@ if (-not (Ensure-Node)) {
 }
 
 $didUpdate = Update-IcarusManagerFromGit
+
+if ($ResetAdmin) {
+  $env:ICARUS_RESET_ADMIN_PASSWORD = "1"
+  Write-Host "Admin password reset requested. Icarus Manager will print a temporary password in this window." -ForegroundColor Yellow
+}
 
 if ($didUpdate) {
   Write-Host "Restarting manager with the updated files..." -ForegroundColor Cyan

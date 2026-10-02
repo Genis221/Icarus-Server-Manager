@@ -23,6 +23,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
+import { createAuthController } from "./auth.mjs";
 
 const execFileAsync = promisify(execFile);
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +71,13 @@ const runtimes = new Map();
 const importJobs = new Map();
 let saveTimer = null;
 let automationRunning = false;
+const auth = createAuthController({
+  dataDir: DATA_DIR,
+  onActivity: (_type, title, detail) => {
+    if (!state) return;
+    addActivity(detail ? `${title} — ${detail}` : title, "info");
+  }
+});
 
 function nowIso() {
   return new Date().toISOString();
@@ -708,7 +716,7 @@ async function getRconPublic(server) {
   }
 }
 
-async function publicStateAsync() {
+async function publicStateAsync(user = null) {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   const servers = await Promise.all(ordered.map(async server => {
     await hydrateIcarusFromIni(server);
@@ -717,16 +725,18 @@ async function publicStateAsync() {
   return {
     host: hostPublic(),
     servers,
-    activity: state.activity.slice(0, 40)
+    activity: state.activity.slice(0, 40),
+    user: auth.publicUser(user)
   };
 }
 
-function publicState() {
+function publicState(user = null) {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   return {
     host: hostPublic(),
     servers: ordered.map(server => publicServer(server, server._rconPublic || null)),
-    activity: state.activity.slice(0, 40)
+    activity: state.activity.slice(0, 40),
+    user: auth.publicUser(user)
   };
 }
 
@@ -3334,13 +3344,51 @@ async function handleApi(req, res, url) {
     return sendJson(res, 403, { error: "Only loopback/LAN clients are allowed. Set ICARUS_ALLOW_PUBLIC=true to allow all IPs." });
   }
 
-  const { pathname } = url;
+  const pathname = (url.pathname || "/").replace(/\/+$/, "") || "/";
   const method = req.method || "GET";
+  const parts = pathname.split("/").filter(Boolean);
+
+  if (pathname === "/api/auth/status" && method === "GET") {
+    return sendJson(res, 200, await auth.status(req));
+  }
+  if (pathname === "/api/auth/login" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    return sendJson(res, 200, await auth.login(req, res, body));
+  }
+  if (pathname === "/api/auth/logout" && method === "POST") {
+    return sendJson(res, 200, await auth.logout(req, res));
+  }
+  if (pathname === "/api/auth/logout-all" && method === "POST") {
+    return sendJson(res, 200, await auth.logoutEverywhere(req, res));
+  }
+  if (pathname === "/api/auth/me" && method === "GET") {
+    const { user } = await auth.requireUser(req);
+    return sendJson(res, 200, { user: auth.publicUser(user) });
+  }
+  if (pathname === "/api/auth/users" && method === "GET") {
+    return sendJson(res, 200, await auth.listUsers(req));
+  }
+  if (pathname === "/api/auth/users" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    return sendJson(res, 201, await auth.createUser(req, body));
+  }
+  if (parts[0] === "api" && parts[1] === "auth" && parts[2] === "users" && parts[3] && method === "DELETE") {
+    return sendJson(res, 200, await auth.deleteUser(req, parts[3]));
+  }
+  if (pathname === "/api/auth/change-password" && method === "POST") {
+    const body = (await readBody(req)) || {};
+    return sendJson(res, 200, await auth.changePassword(req, body));
+  }
+
+  if (!auth.isPublicApi(pathname, method)) {
+    await auth.requireUser(req);
+  }
 
   if (method === "GET" && pathname === "/api/state") {
+    const { user } = await auth.requireUser(req);
     await refreshAllRuntimes({ deep: false });
     scheduleRuntimeRefresh({ deep: true });
-    return sendJson(res, 200, await publicStateAsync());
+    return sendJson(res, 200, await publicStateAsync(user));
   }
 
   if (method === "POST" && pathname === "/api/manager/startup") {
@@ -3526,7 +3574,8 @@ async function handleApi(req, res, url) {
       if (server) server.order = index;
     });
     scheduleSave();
-    return sendJson(res, 200, publicState());
+    const { user } = await auth.requireUser(req);
+    return sendJson(res, 200, publicState(user));
   }
 
   if (method === "POST" && pathname === "/api/servers/copy-settings") {
@@ -3765,6 +3814,7 @@ async function handler(req, res) {
 
 async function main() {
   await loadState();
+  await auth.init();
   for (const server of state.servers) runtimeOf(server.id);
   await refreshAllRuntimes({ deep: false });
   scheduleRuntimeRefresh({ deep: true });

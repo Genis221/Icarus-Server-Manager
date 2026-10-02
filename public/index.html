@@ -41,6 +41,11 @@
           </div>
         </div>
         <div class="rail-tools">
+          <div class="rail-auth" id="rail-auth" hidden>
+            <span class="rail-auth-user" id="auth-user-label" title="Signed in"></span>
+            <button type="button" class="tool-btn" id="btn-account" title="Account settings">Account</button>
+            <button type="button" class="tool-btn ghost" id="btn-logout" title="Sign out">Log out</button>
+          </div>
           <button type="button" class="tool-btn tool-btn-wide" id="btn-restart-manager" title="Restart Server Manager and check for updates">Restart Server Manager</button>
           <div class="rail-tools-row">
             <button type="button" class="tool-btn" id="btn-theme" title="Toggle theme" aria-label="Toggle theme">Change to Light mode</button>
@@ -85,6 +90,48 @@
         <div class="loading-view"><div class="spinner"></div><p>Loading fleet…</p></div>
       </main>
     </div>
+
+    <dialog id="account-dialog" class="modal account-modal">
+      <div class="modal-body">
+        <p class="modal-kicker">Security</p>
+        <h2>Account</h2>
+        <p class="muted" id="account-signed-as">Signed in</p>
+
+        <form id="change-password-form" class="accounts-form">
+          <label class="field"><span>Current password</span><input name="currentPassword" type="password" autocomplete="current-password" required /></label>
+          <label class="field"><span>New password</span><input name="newPassword" type="password" autocomplete="new-password" required minlength="10" /></label>
+          <label class="field"><span>Confirm new password</span><input name="confirmPassword" type="password" autocomplete="new-password" required minlength="10" /></label>
+          <div class="accounts-actions">
+            <button type="submit" class="btn primary">Change password</button>
+            <button type="button" class="btn secondary" id="btn-logout-all">Log out everywhere</button>
+          </div>
+          <p class="field-hint">Passwords must be at least 10 characters. Changing your password ends other sessions.</p>
+        </form>
+
+        <section class="accounts-admin" id="accounts-admin" hidden>
+          <h3>Operators</h3>
+          <p class="field-hint">Only admins can manage accounts. Give each person their own login — do not share passwords.</p>
+          <div class="account-list" id="account-list"></div>
+          <form id="create-user-form" class="accounts-form">
+            <label class="field"><span>Username</span><input name="username" required maxlength="32" pattern="[A-Za-z0-9._-]{3,32}" placeholder="operator1" /></label>
+            <label class="field"><span>Temporary password</span><input name="password" type="password" required minlength="10" autocomplete="new-password" /></label>
+            <label class="field"><span>Role</span>
+              <select name="role">
+                <option value="operator">Operator</option>
+                <option value="admin">Admin</option>
+              </select>
+            </label>
+            <div class="accounts-actions">
+              <button type="submit" class="btn secondary">Add account</button>
+            </div>
+          </form>
+        </section>
+
+        <div class="modal-actions">
+          <button type="button" class="btn secondary" data-close>Close</button>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="info-dialog" class="modal">
       <div class="modal-body">

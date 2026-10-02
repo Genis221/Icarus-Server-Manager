@@ -41,10 +41,13 @@ cd Icarus-Server-Manager
 
 The start script checks GitHub for manager updates, binds to `0.0.0.0`, opens Windows Firewall for the dashboard port, and stops any previous manager already using port **3230**.
 
+On first launch the manager creates an admin login (username **Genis221** by default) and prints a temporary password in the console. Sign in from the browser, then change the password under **Account**. Use **`Reset-Admin-Password.cmd`** if you lose access.
+
 ---
 
 ## What you get
 
+- Sign-in protection (HttpOnly session cookie, rate limits, lockout, optional 30-day remember-me)
 - Multi-server profiles (tabs)
 - Start / stop `IcarusServer-Win64-Shipping.exe`
 - SteamCMD update / verify / repair (keeps `Icarus\Saved`)
@@ -73,13 +76,15 @@ Admin commands are in-game (`/AdminLogin`, `/AdminSay`, `/KickPlayer`, `/ReturnT
 ```text
 Icarus Server Manager/
 ├── server.mjs
+├── auth.mjs
 ├── package.json
 ├── Start Icarus Manager.cmd
-├── Start-IcarusManager.ps1
+├── StartIcarusManager.ps1
+├── Reset-Admin-Password.cmd
 ├── public/
-└── data/                   # Runtime (gitignored)
+└── data/                   # Runtime (gitignored) — includes data/auth/
 ```
 
-Env overrides: `ICARUS_HOST`, `ICARUS_PORT`, `ICARUS_DATA_DIR`, `ICARUS_ALLOW_REMOTE`, `ICARUS_ALLOW_PUBLIC`
+Env overrides: `ICARUS_HOST`, `ICARUS_PORT`, `ICARUS_DATA_DIR`, `ICARUS_ALLOW_REMOTE`, `ICARUS_ALLOW_PUBLIC`, `ICARUS_ADMIN_USERNAME`, `ICARUS_ADMIN_PASSWORD`, `ICARUS_RESET_ADMIN_PASSWORD`
 
-`data/` is gitignored so local paths and secrets stay on your machine.
+`data/` is gitignored so local paths, sessions, and password hashes stay on your machine.
