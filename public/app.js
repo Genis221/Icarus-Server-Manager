@@ -695,8 +695,9 @@ function updateHostMeters(resources) {
   const cpuBar = document.getElementById("host-cpu-bar");
   const cpuDetail = document.getElementById("host-cpu-detail");
   const ramLabel = document.getElementById("host-ram-label");
-  const ramBar = document.getElementById("host-ram-bar");
   const ramDetail = document.getElementById("host-ram-detail");
+  const ramTrack = document.getElementById("host-ram-track");
+  const ramLegend = document.getElementById("host-ram-legend");
   const cpuMeter = document.querySelector('.host-meter[data-meter="cpu"]');
   const ramMeter = document.querySelector('.host-meter[data-meter="ram"]');
   if (!cpuLabel || !resources) return;
@@ -722,12 +723,24 @@ function updateHostMeters(resources) {
 
   const ramPct = Number(resources.ramUsedPercent);
   const ramSpeed = resources.ramSpeedLabel || "";
-  if (Number.isFinite(ramPct)) {
+  if (ramLabel && Number.isFinite(ramPct)) {
     ramLabel.textContent = ramSpeed
       ? `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}% · ${ramSpeed}`
       : `${ramPct.toFixed(ramPct >= 10 ? 0 : 1)}%`;
-    if (ramBar) ramBar.style.width = `${Math.max(0, Math.min(100, ramPct))}%`;
     if (ramMeter) ramMeter.dataset.level = meterLevel(ramPct);
+  }
+  const segments = Array.isArray(resources.ramSegments) ? resources.ramSegments : [];
+  if (ramTrack) {
+    if (segments.length) {
+      ramTrack.innerHTML = segments.map(segment => {
+        const width = Math.max(0, Math.min(100, Number(segment.percentOfTotal) || 0));
+        if (width <= 0) return "";
+        return `<i class="ram-seg ram-seg-${escapeHtml(segment.color || segment.id)}" style="width:${width}%" title="${escapeHtml(segment.label)} · ${escapeHtml(segment.bytesLabel)}"></i>`;
+      }).join("");
+    } else {
+      const width = Math.max(0, Math.min(100, Number.isFinite(ramPct) ? ramPct : 0));
+      ramTrack.innerHTML = `<i class="ram-seg ram-seg-other" style="width:${width}%"></i>`;
+    }
   }
   if (ramDetail) {
     const parts = [
@@ -737,6 +750,18 @@ function updateHostMeters(resources) {
     ];
     if (ramSpeed) parts.push(ramSpeed);
     ramDetail.textContent = parts.join(" · ");
+  }
+  if (ramLegend) {
+    const active = segments.filter(segment => (Number(segment.bytes) || 0) > 0);
+    if (active.length) {
+      ramLegend.hidden = false;
+      ramLegend.innerHTML = active.map(segment => (
+        `<span class="host-ram-legend-item"><i class="ram-seg-${escapeHtml(segment.color || segment.id)}"></i>${escapeHtml(segment.label)} ${escapeHtml(segment.bytesLabel)}</span>`
+      )).join("");
+    } else {
+      ramLegend.hidden = true;
+      ramLegend.innerHTML = "";
+    }
   }
 }
 

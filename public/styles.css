@@ -308,7 +308,7 @@ html[data-theme="light"] .host-meter-track {
   background: rgba(0, 0, 0, 0.08);
   border-color: rgba(15, 40, 48, 0.12);
 }
-.host-meter-track i {
+.host-meter-track > i:not(.ram-seg) {
   display: block;
   height: 100%;
   width: 0;
@@ -317,13 +317,67 @@ html[data-theme="light"] .host-meter-track {
   box-shadow: 0 0 10px rgba(45, 212, 191, 0.45);
   transition: width 0.45s ease, background 0.3s ease, box-shadow 0.3s ease;
 }
-.host-meter[data-level="warn"] .host-meter-track i {
+.host-meter[data-level="warn"] .host-meter-track > i:not(.ram-seg) {
   background: linear-gradient(90deg, #fcd34d, #fbbf24);
   box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
 }
-.host-meter[data-level="hot"] .host-meter-track i {
+.host-meter[data-level="hot"] .host-meter-track > i:not(.ram-seg) {
   background: linear-gradient(90deg, #fda4af, #fb7185);
   box-shadow: 0 0 10px rgba(251, 113, 133, 0.4);
+}
+.host-ram-track {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+.host-ram-track .ram-seg {
+  display: block;
+  height: 100%;
+  flex: 0 0 auto;
+  border-radius: 0;
+  min-width: 0;
+  box-shadow: none;
+  transition: width 0.45s ease;
+}
+.host-ram-track .ram-seg:first-child {
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+}
+.host-ram-track .ram-seg:last-child {
+  border-top-right-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+.ram-seg-minecraft { background: linear-gradient(180deg, #5fbf84, #3f8860); }
+.ram-seg-icarus { background: linear-gradient(180deg, #e0b46a, #c48a2e); }
+.ram-seg-sevendays { background: linear-gradient(180deg, #e08a7c, #c25648); }
+.ram-seg-ark { background: linear-gradient(180deg, #6eb0c9, #3f7f98); }
+.ram-seg-other { background: linear-gradient(180deg, #8a948c, #5f6b62); }
+html[data-theme="dark"] .ram-seg-minecraft { background: linear-gradient(180deg, #7fd4a2, #4ea876); }
+html[data-theme="dark"] .ram-seg-icarus { background: linear-gradient(180deg, #f0c878, #d6a247); }
+html[data-theme="dark"] .ram-seg-sevendays { background: linear-gradient(180deg, #f0a090, #e06a5a); }
+html[data-theme="dark"] .ram-seg-ark { background: linear-gradient(180deg, #7eb6cc, #4a8fa8); }
+html[data-theme="dark"] .ram-seg-other { background: linear-gradient(180deg, #6b756e, #465047); }
+.host-ram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 2px;
+}
+.host-ram-legend[hidden] { display: none !important; }
+.host-ram-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.host-ram-legend-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: block;
+  flex: none;
 }
 .host-meter-detail {
   color: var(--muted);
