@@ -685,9 +685,9 @@ function fromTimeInput(value) {
 function meterLevel(percent) {
   const n = Number(percent);
   if (!Number.isFinite(n)) return "";
-  if (n >= 90) return "hot";
-  if (n >= 75) return "warn";
-  return "";
+  if (n >= 75) return "hot";
+  if (n >= 50) return "warn";
+  return "ok";
 }
 
 function updateHostMeters(resources) {
@@ -708,7 +708,7 @@ function updateHostMeters(resources) {
   if (cpu == null || !Number.isFinite(Number(cpu))) {
     cpuLabel.textContent = ghz ? `… · ${cores}c · ${ghz}` : "…";
     if (cpuBar) cpuBar.style.width = "0%";
-    if (cpuMeter) cpuMeter.dataset.level = "";
+    if (cpuMeter) cpuMeter.dataset.level = "ok";
   } else {
     const pct = Math.max(0, Math.min(100, Number(cpu)));
     cpuLabel.textContent = ghz
