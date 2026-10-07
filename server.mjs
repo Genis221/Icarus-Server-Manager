@@ -908,6 +908,7 @@ function mapWindowsProcessRows(rows) {
     parentPid: Number(row.ParentProcessId) || 0,
     name: String(row.Name || ""),
     commandLine: String(row.CommandLine || ""),
+    executablePath: String(row.ExecutablePath || ""),
     memoryBytes: Number(row.WorkingSetSize) || 0
   })).filter(proc => proc.pid > 0);
 }
@@ -920,13 +921,13 @@ function parseTasklistMemoryBytes(memField) {
 }
 
 async function listWindowsProcessesViaCim() {
-  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
+  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
   const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 25000);
   return mapWindowsProcessRows(parseWmicCsv(result.output));
 }
 
 async function listWindowsProcessesViaWmic() {
-  const wmic = await captureProcess("wmic", ["process", "get", "ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize", "/FORMAT:CSV"], 20000);
+  const wmic = await captureProcess("wmic", ["process", "get", "ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize", "/FORMAT:CSV"], 20000);
   return mapWindowsProcessRows(parseWmicCsv(wmic.output));
 }
 
@@ -941,6 +942,7 @@ async function listWindowsProcessesViaTasklist() {
       parentPid: 0,
       name: match[1],
       commandLine: "",
+      executablePath: "",
       memoryBytes: parseTasklistMemoryBytes(match[5])
     });
   }
@@ -958,34 +960,70 @@ async function listWindowsProcesses() {
   return [];
 }
 
-function classifyGameProcess(proc) {
+function isJavaProcessName(name) {
+  return /^javaw?(\.exe)?$/i.test(String(name || "").trim());
+}
+
+function looksLikeMinecraftText(text) {
+  const hay = String(text || "").toLowerCase();
+  if (!hay) return false;
+  // NeoForge run.bat uses: java @user_jvm_args.txt @libraries/net/neoforged/.../win_args.txt
+  return /minecraft|neoforged|neoforge|minecraftforge|fabricmc|paperclip|\bpaper[-_.]|spigot|purpur|quilt|bukkit|server\.jar|user_jvm_args|win_args\.txt|unix_args\.txt|@libraries|libraries[/\\]net[/\\](neoforged|minecraftforge|minecraft|fabricmc)|curseforge|modrinth|atm10|all.?the.?mods|fabric-server|forge-[\d.]+-/.test(hay);
+}
+
+function classifyGameProcess(proc, listeningPids = null) {
   const name = String(proc?.name || "").toLowerCase();
   const cmd = String(proc?.commandLine || "").toLowerCase();
-  const hay = `${name} ${cmd}`;
+  const exe = String(proc?.executablePath || "").toLowerCase();
+  const hay = `${name} ${cmd} ${exe}`;
   if (/shootergame|arkascended|asaapi|ark.*server|asaserver|arkdevkit/.test(hay)) return "ark";
   if (/7daystodie|7dtd/.test(hay)) return "sevendays";
   if (/\bicarus\b/.test(hay)) return "icarus";
   if (/bedrock_server|minecraft\.windows|minecraftlauncher/.test(name)) return "minecraft";
-  if (/^javaw?\.exe$/.test(name)) {
-    if (/minecraft|forge|fabric|neoforge|paper|spigot|purpur|quilt|bukkit|server\.jar|user_jvm_args|libraries[/\\]net[/\\](minecraftforge|minecraft|fabricmc)/.test(cmd)) {
-      return "minecraft";
-    }
+  if (isJavaProcessName(name) || /[/\\]javaw?\.exe$/i.test(exe)) {
+    if (looksLikeMinecraftText(hay)) return "minecraft";
+    // NeoForge/Paper sometimes expose little cmdline; treat listening Java on MC port bands as Minecraft.
+    if (listeningPids?.has(proc.pid)) return "minecraft";
     return null;
   }
-  if (/minecraft|forge|fabric|neoforge|paperclip/.test(hay) && /\.exe$/.test(name)) return "minecraft";
+  if (looksLikeMinecraftText(hay) && /\.exe$/i.test(name)) return "minecraft";
   return null;
+}
+
+async function listListeningPidsPreferMinecraft() {
+  if (process.platform !== "win32") return new Set();
+  const listed = await captureProcess("netstat.exe", ["-ano", "-p", "tcp"], 8000);
+  const pids = new Set();
+  for (const line of String(listed.output || "").split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line)) continue;
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 4) continue;
+    const local = parts[1] || "";
+    const pid = Number(parts[parts.length - 1]) || 0;
+    if (!pid) continue;
+    const portMatch = local.match(/:(\d+)$/);
+    const port = portMatch ? Number(portMatch[1]) : 0;
+    // Vanilla/modded MC + BlockSmith defaults (25565+, 25780, etc.)
+    if ((port >= 25500 && port <= 25999) || (port >= 25000 && port <= 25050)) {
+      pids.add(pid);
+    }
+  }
+  return pids;
 }
 
 async function sampleHostRamBreakdown() {
   if (ramBreakdownRunning || process.platform !== "win32") return;
   ramBreakdownRunning = true;
   try {
-    const procs = await listWindowsProcesses();
+    const [procs, listeningMcPids] = await Promise.all([
+      listWindowsProcesses(),
+      listListeningPidsPreferMinecraft()
+    ]);
     const byPid = new Map(procs.map(proc => [proc.pid, proc]));
     const totals = { minecraft: 0, icarus: 0, sevendays: 0, ark: 0 };
     const counted = new Set();
     for (const proc of procs) {
-      const group = classifyGameProcess(proc);
+      const group = classifyGameProcess(proc, listeningMcPids);
       if (!group || counted.has(proc.pid)) continue;
       counted.add(proc.pid);
       totals[group] += Number(proc.memoryBytes) || 0;
