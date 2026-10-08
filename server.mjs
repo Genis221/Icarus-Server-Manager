@@ -716,11 +716,19 @@ async function getRconPublic(server) {
   }
 }
 
+const iniPublicCache = new Map(); // serverId -> { at, rcon }
+
 async function publicStateAsync(user = null) {
   const ordered = [...state.servers].sort((a, b) => a.order - b.order);
   const servers = await Promise.all(ordered.map(async server => {
-    await hydrateIcarusFromIni(server);
-    return publicServer(server, await getRconPublic(server));
+    const cached = iniPublicCache.get(server.id);
+    if (!cached || Date.now() - cached.at > 10000) {
+      await hydrateIcarusFromIni(server);
+      const rcon = await getRconPublic(server);
+      iniPublicCache.set(server.id, { at: Date.now(), rcon });
+      return publicServer(server, rcon);
+    }
+    return publicServer(server, cached.rcon);
   }));
   return {
     host: hostPublic(),
@@ -921,7 +929,14 @@ function parseTasklistMemoryBytes(memField) {
 }
 
 async function listWindowsProcessesViaCim() {
-  const script = "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize | ConvertTo-Csv -NoTypeInformation";
+  // Only pull game-related processes — dumping CommandLine for every Windows process every few seconds pegs the CPU.
+  const script = [
+    "$names = '^(java|javaw|IcarusServer|IcarusServer-Win64-Shipping|7DaysToDie|7DaysToDieServer|ShooterGame|ShooterGameServer|ArkAscendedServer|AsaApiLoader|bedrock_server)(\\.exe)?$'",
+    "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize |",
+    "  Where-Object { $_.Name -match $names } |",
+    "  Select-Object ProcessId,ParentProcessId,Name,CommandLine,ExecutablePath,WorkingSetSize |",
+    "  ConvertTo-Csv -NoTypeInformation"
+  ].join(" ");
   const result = await captureProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], 25000);
   return mapWindowsProcessRows(parseWmicCsv(result.output));
 }
@@ -1015,10 +1030,12 @@ async function sampleHostRamBreakdown() {
   if (ramBreakdownRunning || process.platform !== "win32") return;
   ramBreakdownRunning = true;
   try {
-    const [procs, listeningMcPids] = await Promise.all([
-      listWindowsProcesses(),
-      listListeningPidsPreferMinecraft()
-    ]);
+    const procs = await listWindowsProcesses();
+    const needsPortHint = procs.some(proc => {
+      if (classifyGameProcess(proc, null)) return false;
+      return isJavaProcessName(proc.name) || /[/\\]javaw?\.exe$/i.test(proc.executablePath || "");
+    });
+    const listeningMcPids = needsPortHint ? await listListeningPidsPreferMinecraft() : new Set();
     const byPid = new Map(procs.map(proc => [proc.pid, proc]));
     const totals = { minecraft: 0, icarus: 0, sevendays: 0, ark: 0 };
     const counted = new Set();
@@ -3621,8 +3638,8 @@ async function handleApi(req, res, url) {
 
   if (method === "GET" && pathname === "/api/state") {
     const { user } = await auth.requireUser(req);
-    await refreshAllRuntimes({ deep: false });
-    scheduleRuntimeRefresh({ deep: true });
+    // Serve cached runtime/host snapshots. Background timers keep them fresh —
+    // rescanning processes + A2S on every UI poll was causing CPU sawtooth spikes.
     return sendJson(res, 200, await publicStateAsync(user));
   }
 
@@ -3879,6 +3896,7 @@ async function handleApi(req, res, url) {
         try { await writeIcarusSettings(server); } catch { /* install path may not exist yet */ }
       }
     }
+    iniPublicCache.delete(server.id);
     scheduleSave();
     return sendJson(res, 200, publicServer(server));
   }
@@ -3887,6 +3905,7 @@ async function handleApi(req, res, url) {
     if (state.servers.length <= 1) {
       return sendJson(res, 400, { error: "Cannot delete the last server profile" });
     }
+    iniPublicCache.delete(server.id);
     const runtime = runtimeOf(server.id);
     if (runtime.status === "running") await stopServer(server, { copyLog: false });
     state.servers = state.servers.filter(s => s.id !== server.id);
@@ -4058,14 +4077,14 @@ async function main() {
   await syncManagerWindowsStartup();
   setInterval(() => {
     try { refreshHostResources(); } catch { /* ignore */ }
-  }, 2000);
+  }, 3000);
   setInterval(() => {
     sampleHostRamBreakdown().catch(() => {});
-  }, 3000);
+  }, 15000);
 
   setInterval(() => {
     scheduleRuntimeRefresh({ deep: true });
-  }, 8000);
+  }, 12000);
 
   setInterval(() => {
     automationTick().catch(err => console.error("[automation]", err));

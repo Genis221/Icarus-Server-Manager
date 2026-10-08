@@ -1586,7 +1586,7 @@ async function bootApp() {
     setAuthShell(true);
     await refreshState();
     if (!state.pollTimer) {
-      state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+      state.pollTimer = setInterval(() => refreshState({ silent: true }), 4000);
     }
   } catch (err) {
     if (err.status === 401) {
@@ -1601,7 +1601,7 @@ async function afterSignIn() {
   setAuthShell(true);
   await refreshState();
   if (!state.pollTimer) {
-    state.pollTimer = setInterval(() => refreshState({ silent: true }), 2000);
+    state.pollTimer = setInterval(() => refreshState({ silent: true }), 4000);
   }
 }
 
